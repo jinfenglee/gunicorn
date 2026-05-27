@@ -365,6 +365,13 @@ def validate_pos_int(val):
     return val
 
 
+def validate_pos_float(val):
+    val = float(val)
+    if val < 0:
+        raise ValueError("Value must be positive: %s" % val)
+    return val
+
+
 def validate_ssl_version(val):
     if val != SSLVersion.default:
         sys.stderr.write("Warning: option `ssl_version` is deprecated and it is ignored. Use ssl_context instead.\n")
@@ -734,6 +741,128 @@ class WorkerConnections(Setting):
         The maximum number of simultaneous clients.
 
         This setting only affects the ``gthread``, ``eventlet`` and ``gevent`` worker types.
+        """
+
+
+class SlowRequestThreshold(Setting):
+    name = "slow_request_threshold"
+    section = "Worker Processes"
+    cli = ["--slow-request-threshold"]
+    meta = "FLOAT"
+    validator = validate_pos_float
+    type = float
+    default = 0.0
+    desc = """\
+        Processing time (in seconds) above which a request route is treated as
+        "slow" by the ``gthread`` worker.
+
+        When set to a positive value, the ``gthread`` worker runs two separate
+        lanes of threads: a *fast* lane (sized by :ref:`threads`) and a *slow*
+        lane (sized by :ref:`slow-threads`). Requests are routed by predicting,
+        from previously observed timings of the same route (method + path),
+        whether they will take longer than this threshold. Slow-predicted
+        requests go to the slow lane so they can never starve the fast lane,
+        even under a flood.
+
+        A route is learned as slow once it has been observed exceeding this
+        threshold (either on completion or while still running); its timing
+        decays back below the threshold if it becomes fast again.
+
+        The default of ``0`` disables the feature and restores the single
+        thread-pool behaviour.
+
+        This setting only affects the ``gthread`` worker type.
+
+        .. versionadded:: 23.1.0
+        """
+
+
+class SlowThreads(Setting):
+    name = "slow_threads"
+    section = "Worker Processes"
+    cli = ["--slow-threads"]
+    meta = "INT"
+    validator = validate_pos_int
+    type = int
+    default = 1
+    desc = """\
+        The number of worker threads dedicated to the slow lane.
+
+        These threads only ever run requests predicted to be slow. When the slow
+        lane has no pending work, they help drain the fast lane, so they are
+        never idle while fast work is waiting. Total threads per worker is
+        ``threads + slow_threads``.
+
+        Only used by the ``gthread`` worker when
+        :ref:`slow-request-threshold` is set.
+
+        .. versionadded:: 23.1.0
+        """
+
+
+class SlowQueueMaxsize(Setting):
+    name = "slow_queue_maxsize"
+    section = "Worker Processes"
+    cli = ["--slow-queue-maxsize"]
+    meta = "INT"
+    validator = validate_pos_int
+    type = int
+    default = 100
+    desc = """\
+        Maximum number of requests allowed to wait in the slow lane queue.
+
+        When the slow lane queue is full, additional slow-predicted requests are
+        rejected immediately with a ``503 Service Unavailable`` response instead
+        of being queued, keeping the slow lane's backpressure contained. A value
+        of ``0`` means the slow queue is unbounded.
+
+        Only used by the ``gthread`` worker when
+        :ref:`slow-request-threshold` is set.
+
+        .. versionadded:: 23.1.0
+        """
+
+
+class SlowRoutes(Setting):
+    name = "slow_routes"
+    section = "Worker Processes"
+    cli = ["--slow-route"]
+    action = "append"
+    meta = "PATTERN"
+    validator = validate_list_string
+    default = []
+    desc = """\
+        Regular expression(s) matching routes that should always be treated as
+        slow, regardless of observed timings.
+
+        Each pattern is matched (using ``re.search``) against the route key,
+        which is the request method and path joined by a space, e.g.
+        ``"POST /reports/generate"``. Seeding known-slow routes avoids the brief
+        window where a never-before-seen slow route is learned.
+
+        Only used by the ``gthread`` worker when
+        :ref:`slow-request-threshold` is set.
+
+        .. versionadded:: 23.1.0
+        """
+
+
+class SlowLaneRetryAfter(Setting):
+    name = "slow_lane_retry_after"
+    section = "Worker Processes"
+    cli = ["--slow-lane-retry-after"]
+    meta = "INT"
+    validator = validate_pos_int
+    type = int
+    default = 1
+    desc = """\
+        Value (in seconds) of the ``Retry-After`` header sent with the ``503``
+        response when the slow lane queue is full.
+
+        Only used by the ``gthread`` worker when
+        :ref:`slow-request-threshold` is set.
+
+        .. versionadded:: 23.1.0
         """
 
 

@@ -25,10 +25,14 @@ from functools import partial
 from threading import RLock
 
 from . import base
+from .gthread_routing import SlowRoutePredictor
 from .. import http
 from .. import util
 from .. import sock
 from ..http import wsgi
+
+# how many bytes to peek when classifying a request by its request line
+REQUEST_LINE_PEEK = 65536
 
 
 class TConn:
@@ -41,6 +45,9 @@ class TConn:
 
         self.timeout = None
         self.parser = None
+        # route key (method + path), set by the worker when request routing is
+        # enabled; used to predict and learn slow routes
+        self.route_key = None
 
         # set the socket to non blocking
         self.sock.setblocking(False)
@@ -69,14 +76,26 @@ class ThreadWorker(base.Worker):
         super().__init__(*args, **kwargs)
         self.worker_connections = self.cfg.worker_connections
         self.max_keepalived = self.cfg.worker_connections - self.cfg.threads
-        # initialise the pool
+        # initialise the pool(s): a single pool when routing is disabled, or a
+        # separate fast and slow pool when it is enabled
         self.tpool = None
+        self.fast_pool = None
+        self.slow_pool = None
+        # number of slow requests submitted but not yet finished, used to bound
+        # the slow lane (running + queued) and shed load with 503
+        self.nr_slow = 0
         self.poller = None
         self.shutdown_event = os.eventfd(0)
         self._lock = None
         self.futures = deque()
         self._keep = deque()
         self.nr_conns = 0
+
+        # request routing: when a slow-request threshold is configured, slow
+        # requests are routed to a separate lane so they cannot starve fast ones
+        self.slow_threshold = self.cfg.slow_request_threshold
+        self.routing_enabled = self.slow_threshold > 0
+        self.predictor = None
 
     @classmethod
     def check_config(cls, cfg, log):
@@ -87,7 +106,19 @@ class ThreadWorker(base.Worker):
                         "Check the number of worker connections and threads.")
 
     def init_process(self):
-        self.tpool = self.get_thread_pool()
+        if self.routing_enabled:
+            self.predictor = SlowRoutePredictor(
+                self.slow_threshold,
+                seed_patterns=self.cfg.slow_routes,
+            )
+            # a dedicated pool per lane: slow requests can never occupy the
+            # fast pool's threads
+            self.fast_pool = futures.ThreadPoolExecutor(
+                max_workers=self.cfg.threads)
+            self.slow_pool = futures.ThreadPoolExecutor(
+                max_workers=self.cfg.slow_threads)
+        else:
+            self.tpool = self.get_thread_pool()
         self.poller = selectors.DefaultSelector()
         self._lock = RLock()
         super().init_process()
@@ -95,6 +126,11 @@ class ThreadWorker(base.Worker):
     def get_thread_pool(self):
         """Override this method to customize how the thread pool is created"""
         return futures.ThreadPoolExecutor(max_workers=self.cfg.threads)
+
+    def _shutdown_pools(self, wait):
+        for pool in (self.tpool, self.fast_pool, self.slow_pool):
+            if pool is not None:
+                pool.shutdown(wait)
 
     def handle_exit(self, sig, frame):
         self.alive = False
@@ -104,21 +140,36 @@ class ThreadWorker(base.Worker):
         self.alive = False
         # worker_int callback
         self.cfg.worker_int(self)
-        self.tpool.shutdown(False)
+        self._shutdown_pools(False)
         time.sleep(0.1)
         sys.exit(0)
 
-    def _wrap_future(self, fs, conn):
+    def _wrap_future(self, fs, conn, slow=False):
         fs.conn = conn
-        fs._request_timeout = time.monotonic() + self.cfg.timeout
+        fs.slow = slow
+        fs._start_time = time.monotonic()
+        fs._request_timeout = fs._start_time + self.cfg.timeout
+        fs._observed_slow = False
         self.futures.append(fs)
         fs.add_done_callback(self.finish_request)
 
-    def enqueue_req(self, conn):
+    def enqueue_req(self, conn, slow=False):
         conn.init()
-        # submit the connection to a worker
-        fs = self.tpool.submit(self.handle, conn)
-        self._wrap_future(fs, conn)
+        # submit the connection to the appropriate pool
+        if not self.routing_enabled:
+            fs = self.tpool.submit(self.handle, conn)
+        elif slow:
+            cap = self.cfg.slow_queue_maxsize
+            if cap and self.nr_slow >= self.cfg.slow_threads + cap:
+                # slow lane (running + queued) is full; shed load with 503
+                # instead of letting the slow queue grow unbounded
+                self.reject_overloaded(conn)
+                return
+            self.nr_slow += 1
+            fs = self.slow_pool.submit(self.handle, conn)
+        else:
+            fs = self.fast_pool.submit(self.handle, conn)
+        self._wrap_future(fs, conn, slow=slow)
 
     def accept(self, server, listener):
         try:
@@ -127,12 +178,114 @@ class ThreadWorker(base.Worker):
             conn = TConn(self.cfg, sock, client, server)
 
             self.nr_conns += 1
-            # enqueue the job
-            self.enqueue_req(conn)
+            if self.routing_enabled and not self.cfg.is_ssl:
+                # park the connection until its request line is readable, then
+                # classify and route it to the fast or slow lane
+                self.park_for_request(conn)
+            else:
+                # legacy single-lane path (also used for SSL, whose request
+                # line cannot be peeked before the TLS handshake)
+                self.enqueue_req(conn)
         except OSError as e:
             if e.errno not in (errno.EAGAIN, errno.ECONNABORTED,
                                errno.EWOULDBLOCK):
                 raise
+
+    def park_for_request(self, conn):
+        """Register a connection in the poller until its request line arrives."""
+        conn.sock.setblocking(False)
+        conn.set_timeout()
+        with self._lock:
+            self._keep.append(conn)
+            self.poller.register(conn.sock, selectors.EVENT_READ,
+                                 partial(self.classify_and_dispatch, conn))
+
+    def classify_and_dispatch(self, conn, client=None):
+        """Peek the request line, predict the lane, and enqueue the request."""
+        line, closed, complete = self._peek_request_line(conn)
+        if not closed and not complete:
+            # request line has not fully arrived yet; keep waiting. Stalled
+            # clients are reaped by murder_keepalived via the connection timeout.
+            return
+
+        with self._lock:
+            try:
+                # remove the connection from the parked set
+                self._keep.remove(conn)
+            except ValueError:
+                # already handled (e.g. by murder_keepalived); nothing to do
+                return
+            try:
+                self.poller.unregister(conn.sock)
+            except (KeyError, OSError, ValueError):
+                pass
+
+        if closed:
+            self.nr_conns -= 1
+            conn.close()
+            return
+
+        conn.route_key = self._route_key(line)
+        slow = self.predictor.is_slow(conn.route_key)
+        self.enqueue_req(conn, slow=slow)
+
+    def _peek_request_line(self, conn):
+        """Return ``(line, closed, complete)`` for the connection's request line.
+
+        ``line`` is the request line bytes (without CRLF) once available,
+        ``closed`` is True if the peer closed the connection, and ``complete``
+        is True once we should stop waiting for more data.
+        """
+        try:
+            data = conn.sock.recv(REQUEST_LINE_PEEK, socket.MSG_PEEK)
+        except (BlockingIOError, InterruptedError):
+            return None, False, False
+        except OSError:
+            return None, True, False
+
+        if data == b"":
+            # peer closed the connection before sending a request
+            return None, True, False
+
+        idx = data.find(b"\r\n")
+        if idx == -1:
+            if len(data) >= REQUEST_LINE_PEEK:
+                # request line longer than our peek window; stop classifying and
+                # let the worker's parser deal with (or reject) it
+                return None, False, True
+            return None, False, False
+        return data[:idx], False, True
+
+    @staticmethod
+    def _route_key(line):
+        """Build a route key (``"METHOD /path"``) from a raw request line."""
+        if not line:
+            return None
+        parts = line.split(b" ")
+        if len(parts) < 2:
+            return None
+        try:
+            method = parts[0].decode("latin1")
+            path = parts[1].split(b"?", 1)[0].decode("latin1")
+        except UnicodeDecodeError:
+            return None
+        return method + " " + path
+
+    def reject_overloaded(self, conn):
+        """Reject a connection with 503 because the slow lane is saturated."""
+        self.nr_conns -= 1
+        try:
+            conn.sock.setblocking(True)
+            conn.sock.sendall(
+                b"HTTP/1.1 503 Service Unavailable\r\n"
+                b"Connection: close\r\n"
+                b"Content-Length: 0\r\n"
+                b"Retry-After: %d\r\n\r\n"
+                % int(self.cfg.slow_lane_retry_after))
+        except OSError:
+            pass
+        finally:
+            conn.close()
 
     def reuse_connection(self, conn, client):
         with self._lock:
@@ -248,8 +401,16 @@ class ThreadWorker(base.Worker):
                     self.alive = False
                     self.log.error("A request timed out. Exiting.")
                     faulthandler.dump_traceback()
+                elif (self.routing_enabled and not fut._observed_slow
+                        and not fut.slow
+                        and current_time - fut._start_time > self.slow_threshold):
+                    # an in-flight fast-lane request crossed the threshold; learn
+                    # the route as slow now so the rest of a burst is rerouted
+                    # without waiting for this request to finish
+                    self.predictor.observe_slow(fut.conn.route_key)
+                    fut._observed_slow = True
 
-        self.tpool.shutdown(False)
+        self._shutdown_pools(False)
         self.poller.close()
 
         for s in self.sockets:
@@ -258,27 +419,41 @@ class ThreadWorker(base.Worker):
         futures.wait(self.futures, timeout=self.cfg.graceful_timeout)
 
     def finish_request(self, fs):
+        # the slow request is done (whatever the outcome): free its slow slot
+        if self.routing_enabled and fs.slow:
+            self.nr_slow -= 1
+
         if fs.cancelled():
             self.nr_conns -= 1
             fs.conn.close()
             return
+
+        # feed the observed processing time back to the predictor so the route
+        # is learned (or unlearned) as slow
+        if self.routing_enabled and fs.conn.route_key:
+            self.predictor.update(fs.conn.route_key,
+                                  time.monotonic() - fs._start_time)
 
         try:
             (keepalive, conn) = fs.result()
             # if the connection should be kept alived add it
             # to the eventloop and record it
             if keepalive and self.alive:
-                # flag the socket as non blocked
-                conn.sock.setblocking(False)
+                if self.routing_enabled and not self.cfg.is_ssl:
+                    # re-classify the next request on this connection
+                    self.park_for_request(conn)
+                else:
+                    # flag the socket as non blocked
+                    conn.sock.setblocking(False)
 
-                # register the connection
-                conn.set_timeout()
-                with self._lock:
-                    self._keep.append(conn)
+                    # register the connection
+                    conn.set_timeout()
+                    with self._lock:
+                        self._keep.append(conn)
 
-                    # add the socket to the event loop
-                    self.poller.register(conn.sock, selectors.EVENT_READ,
-                                         partial(self.reuse_connection, conn))
+                        # add the socket to the event loop
+                        self.poller.register(conn.sock, selectors.EVENT_READ,
+                                             partial(self.reuse_connection, conn))
             else:
                 self.nr_conns -= 1
                 conn.close()
