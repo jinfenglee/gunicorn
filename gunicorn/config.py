@@ -751,9 +751,13 @@ class EnableAdaptiveQueueing(Setting):
     validator = validate_bool
     action = "store_true"
     type = bool
-    default = False
+    default = validate_bool(
+        os.environ.get("GUNICORN_ENABLE_ADAPTIVE_QUEUEING", "false"))
     desc = """\
         Enable adaptive multi-queue routing in the ``gthread`` worker.
+
+        Can also be enabled by setting the ``GUNICORN_ENABLE_ADAPTIVE_QUEUEING``
+        environment variable to ``true``.
 
         When enabled, the worker splits its :ref:`threads` roughly evenly into
         two lanes — a *fast* lane and a *slow* lane — and routes each request
