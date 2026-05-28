@@ -32,7 +32,7 @@ from .. import sock
 from ..http import wsgi
 
 # how many bytes to peek when classifying a request by its request line
-REQUEST_LINE_PEEK = 65536
+REQUEST_LINE_PEEK = 8192
 
 
 class TConn:
