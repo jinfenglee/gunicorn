@@ -365,6 +365,13 @@ def validate_pos_int(val):
     return val
 
 
+def validate_pos_float(val):
+    val = float(val)
+    if val < 0:
+        raise ValueError("Value must be positive: %s" % val)
+    return val
+
+
 def validate_ssl_version(val):
     if val != SSLVersion.default:
         sys.stderr.write("Warning: option `ssl_version` is deprecated and it is ignored. Use ssl_context instead.\n")
@@ -734,6 +741,61 @@ class WorkerConnections(Setting):
         The maximum number of simultaneous clients.
 
         This setting only affects the ``gthread``, ``eventlet`` and ``gevent`` worker types.
+        """
+
+
+class EnableAdaptiveQueueing(Setting):
+    name = "enable_adaptive_queueing"
+    section = "Worker Processes"
+    cli = ["--enable-adaptive-queueing"]
+    validator = validate_bool
+    action = "store_true"
+    type = bool
+    default = validate_bool(
+        os.environ.get("GUNICORN_ENABLE_ADAPTIVE_QUEUEING", "false"))
+    desc = """\
+        Enable adaptive multi-queue routing in the ``gthread`` worker.
+
+        Can also be enabled by setting the ``GUNICORN_ENABLE_ADAPTIVE_QUEUEING``
+        environment variable to ``true``.
+
+        When enabled, the worker splits its :ref:`threads` roughly evenly into
+        two lanes — a *fast* lane and a *slow* lane — and routes each request
+        to one of them by predicting, from previously observed timings of the
+        same route (method + path), whether it will exceed
+        :ref:`slow-request-threshold`. Slow-predicted requests go to the slow
+        lane so they can never starve the fast lane, even under a flood of
+        slow requests.
+
+        Requires :ref:`threads` to be at least 2.
+
+        This setting only affects the ``gthread`` worker type.
+
+        .. versionadded:: 23.1.0
+        """
+
+
+class SlowRequestThreshold(Setting):
+    name = "slow_request_threshold"
+    section = "Worker Processes"
+    cli = ["--slow-request-threshold"]
+    meta = "FLOAT"
+    validator = validate_pos_float
+    type = float
+    default = 5.0
+    desc = """\
+        Processing time (in seconds) above which a request route is treated as
+        "slow" by the ``gthread`` worker when :ref:`enable-adaptive-queueing`
+        is enabled.
+
+        A route is learned as slow once it has been observed exceeding this
+        threshold (either on completion or while still running); its timing
+        decays back below the threshold if it becomes fast again.
+
+        Only used by the ``gthread`` worker when :ref:`enable-adaptive-queueing`
+        is enabled.
+
+        .. versionadded:: 23.1.0
         """
 
 
