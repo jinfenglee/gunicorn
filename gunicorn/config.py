@@ -778,7 +778,7 @@ class SlowRequestThreshold(Setting):
     meta = "FLOAT"
     validator = validate_pos_float
     type = float
-    default = 1.0
+    default = 5.0
     desc = """\
         Processing time (in seconds) above which a request route is treated as
         "slow" by the ``gthread`` worker when :ref:`enable-adaptive-queueing`
