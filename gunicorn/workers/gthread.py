@@ -77,9 +77,8 @@ class ThreadWorker(base.Worker):
         self.worker_connections = self.cfg.worker_connections
         self.max_keepalived = self.cfg.worker_connections - self.cfg.threads
         # initialise the pool(s): a single pool when routing is disabled, or a
-        # separate fast and slow pool when it is enabled
+        # separate fast (``self.tpool``) and slow pool when it is enabled
         self.tpool = None
-        self.fast_pool = None
         self.slow_pool = None
         # number of slow requests submitted but not yet finished, used to bound
         # the slow lane (running + queued) and shed load with 503
@@ -106,19 +105,16 @@ class ThreadWorker(base.Worker):
                         "Check the number of worker connections and threads.")
 
     def init_process(self):
+        self.tpool = self.get_thread_pool()
         if self.routing_enabled:
             self.predictor = SlowRoutePredictor(
                 self.slow_threshold,
                 seed_patterns=self.cfg.slow_routes,
             )
-            # a dedicated pool per lane: slow requests can never occupy the
-            # fast pool's threads
-            self.fast_pool = futures.ThreadPoolExecutor(
-                max_workers=self.cfg.threads)
+            # a dedicated pool for the slow lane: slow requests can never
+            # occupy the fast pool's (``self.tpool``) threads
             self.slow_pool = futures.ThreadPoolExecutor(
                 max_workers=self.cfg.slow_threads)
-        else:
-            self.tpool = self.get_thread_pool()
         self.poller = selectors.DefaultSelector()
         self._lock = RLock()
         super().init_process()
@@ -128,7 +124,7 @@ class ThreadWorker(base.Worker):
         return futures.ThreadPoolExecutor(max_workers=self.cfg.threads)
 
     def _shutdown_pools(self, wait):
-        for pool in (self.tpool, self.fast_pool, self.slow_pool):
+        for pool in (self.tpool, self.slow_pool):
             if pool is not None:
                 pool.shutdown(wait)
 
@@ -156,9 +152,7 @@ class ThreadWorker(base.Worker):
     def enqueue_req(self, conn, slow=False):
         conn.init()
         # submit the connection to the appropriate pool
-        if not self.routing_enabled:
-            fs = self.tpool.submit(self.handle, conn)
-        elif slow:
+        if self.routing_enabled and slow:
             cap = self.cfg.slow_queue_maxsize
             if cap and self.nr_slow >= self.cfg.slow_threads + cap:
                 # slow lane (running + queued) is full; shed load with 503
@@ -168,7 +162,7 @@ class ThreadWorker(base.Worker):
             self.nr_slow += 1
             fs = self.slow_pool.submit(self.handle, conn)
         else:
-            fs = self.fast_pool.submit(self.handle, conn)
+            fs = self.tpool.submit(self.handle, conn)
         self._wrap_future(fs, conn, slow=slow)
 
     def accept(self, server, listener):
