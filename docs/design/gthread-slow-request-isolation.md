@@ -57,23 +57,23 @@ the actual failure mode — prediction is effective after the first sample.
                                           │ fast          │ slow
                                           ▼               ▼
                                    ┌───────────┐   ┌───────────┐
-                                   │ fast_pool │   │ slow_pool │ (bounded, 503 on full)
+                                   │ fast_pool │   │ slow_pool │
                                    │ F threads │   │ S threads │
                                    └─────┬─────┘   └─────┬─────┘
                                          └───────┬───────┘
                               on completion: predictor.update(route, duration)
 ```
 
-- **Fast lane**: a `ThreadPoolExecutor` of `F = cfg.threads` threads. Only ever
-  runs fast-classified work.
-- **Slow lane**: a separate `ThreadPoolExecutor` of `S = cfg.slow_threads`
-  threads (default 1). Only ever runs slow-classified work.
-- Total OS threads per worker = `F + S`.
-- The slow lane is bounded: a counter (`nr_slow`) tracks slow requests
-  submitted-but-not-finished; once it reaches `S + cfg.slow_queue_maxsize` (i.e.
-  running plus queued), further slow requests are rejected with `503` instead of
-  growing the executor's unbounded internal queue. The fast lane is governed by
-  the existing `worker_connections` admission like today.
+- **Fast lane**: a `ThreadPoolExecutor` of `F = ceil(cfg.threads / 2)` threads.
+  Only ever runs fast-classified work.
+- **Slow lane**: a separate `ThreadPoolExecutor` of `S = cfg.threads // 2`
+  threads. Only ever runs slow-classified work.
+- Total OS threads per worker stays at `cfg.threads` — adaptive-queueing mode splits
+  the existing budget, it does not expand it. `cfg.threads` must be at least 2
+  for the split to be meaningful; otherwise the worker logs a warning and runs
+  with a single pool.
+- Both lanes share the existing `worker_connections` admission like today; the
+  slow lane is not separately bounded.
 
 ### Why two plain pools (and not a custom dual-queue scheduler)
 
@@ -157,13 +157,13 @@ the handshake completes. For SSL connections in this first cut:
 
 New settings, mirroring `WorkerThreads` (`config.py:697`):
 
+- `enable_adaptive_queueing` — boolean; when true, the `gthread` worker splits its
+  `cfg.threads` budget between a fast and a slow lane and routes by prediction.
+  Default `False` (single pool, today's behavior). Requires `cfg.threads >= 2`;
+  otherwise the worker logs a warning and falls back to the single pool.
 - `slow_request_threshold` — float seconds; a route whose learned timing meets/
-  exceeds this is "slow". Default e.g. `1.0`. **`0` disables the whole feature**
-  and restores today's single-pool behavior exactly.
-- `slow_threads` — `S`, slow-lane worker count. Default `1`.
-- `slow_queue_maxsize` — bound on `slow_q`; overflow ⇒ `503`. Default e.g. `100`
-  (`0` = unbounded).
-- `slow_lane_retry_after` — seconds for the `Retry-After` header on 503.
+  exceeds this is "slow". Default `1.0`. Only consulted when `enable_adaptive_queueing` is
+  enabled.
 
 A `slow_route_key` hook to customize the route key (e.g. collapse
 `/users/<id>`) is a possible future addition; the default key is method + path
@@ -171,17 +171,17 @@ with the query string stripped.
 
 ### 5.2 Two thread pools
 
-`init_process` builds two plain `ThreadPoolExecutor`s when routing is enabled —
-`fast_pool` (`F = cfg.threads`) and `slow_pool` (`S = cfg.slow_threads`) — and
-falls back to the single `get_thread_pool()` executor when it is disabled.
-`enqueue_req(conn, slow)` submits to the matching pool; both produce ordinary
+`init_process` builds two plain `ThreadPoolExecutor`s when `enable_adaptive_queueing` is
+enabled — `fast_pool` with `F = ceil(cfg.threads / 2)` workers and `slow_pool`
+with `S = cfg.threads // 2` workers — and falls back to the single
+`get_thread_pool()` executor when it is disabled. `enqueue_req(conn, slow)`
+submits to the matching pool; both produce ordinary
 `concurrent.futures.Future`s, so `_wrap_future`, `add_done_callback`,
 `self.futures` tracking, and `futures.wait` all keep working unchanged.
 
-- Bounding the slow lane: `nr_slow` counts slow requests submitted-but-not-yet-
-  finished. `enqueue_req` rejects (503) when `nr_slow >= S + slow_queue_maxsize`;
-  `finish_request` decrements it. This caps the slow executor's otherwise
-  unbounded internal queue.
+- The slow lane is not separately bounded; its executor's internal queue is
+  capped indirectly by the worker's existing `worker_connections` admission,
+  the same as the single-pool path today.
 - Shutdown drains both pools via a `_shutdown_pools` helper, replacing the
   single `tpool.shutdown` calls; the `graceful_timeout` `futures.wait` is
   unchanged.
@@ -215,16 +215,16 @@ A small, self-contained, thread-safe object:
 
 ## 6. Behavior under load (the cases that matter)
 
-- **Flood of a previously-seen slow route**: every such request
-  is routed to the slow pool. The `F` fast threads are never given this work and
-  keep serving fast traffic at full capacity. When the slow lane reaches
-  `S + slow_queue_maxsize`, further slow requests get a fast `503` — backpressure
-  is contained to the slow lane.
+- **Flood of a previously-seen slow route**: every such request is routed to
+  the slow pool. The `F` fast threads are never given this work and keep
+  serving fast traffic at full capacity. Excess slow requests sit in the slow
+  pool's queue, gated overall by `worker_connections`.
 - **Flood of a never-seen slow route**: the first occurrence(s) run in the fast
   lane; mid-flight learning (§5.4.2) flips the route to slow after one threshold
   interval, so the flood is contained quickly.
 - **Mixed fast traffic, idle slow lane**: the `S` slow threads stay parked (no
-  work stealing in this design — see §3), so fast throughput is `F`, not `F + S`.
+  work stealing in this design — see §3), so fast throughput is `F`, not
+  `F + S`. This is the cost of splitting a fixed `cfg.threads` budget.
 - **Misprediction (route marked slow but now fast)**: handled gracefully — it
   runs in the slow lane, and EWMA decay restores it to the fast lane over time.
 
@@ -232,23 +232,23 @@ A small, self-contained, thread-safe object:
 
 Implemented:
 
-- `config.py` — `slow_request_threshold`, `slow_threads`, `slow_queue_maxsize`,
-  `slow_lane_retry_after`, plus `validate_pos_float`.
+- `config.py` — `enable_adaptive_queueing`, `slow_request_threshold`, plus
+  `validate_pos_float`.
 - `gthread.py` `init_process`/`get_thread_pool` — build `fast_pool` and
-  `slow_pool` (or the single legacy pool when disabled); `_shutdown_pools`.
-- `gthread.py` `enqueue_req` — route to the matching pool; `nr_slow` bound +
-  `reject_overloaded` (503).
+  `slow_pool` (split from `cfg.threads`) when `enable_adaptive_queueing` is on, or the
+  single legacy pool when off; `_shutdown_pools`.
+- `gthread.py` `enqueue_req` — route to the matching pool.
 - `gthread.py` `accept`/`park_for_request`/`classify_and_dispatch`/
   `_peek_request_line`/`_route_key` — poller-driven request-line peek + routing.
-- `gthread.py` `finish_request` — `predictor.update`, `nr_slow` decrement,
-  routing-aware keepalive re-park.
+- `gthread.py` `finish_request` — `predictor.update`, routing-aware keepalive
+  re-park.
 - `gthread.py` run-loop sweep — mid-flight learning.
 - `gthread_routing.py` — `SlowRoutePredictor`.
 
 ## 8. Backward compatibility
 
-- `slow_request_threshold = 0` ⇒ feature off: single pool, no classification, no
-  rejection — byte-for-byte current behavior.
+- `enable_adaptive_queueing = False` (the default) ⇒ feature off: single pool, no
+  classification — byte-for-byte current behavior.
 - Hard per-request timeout (`gthread.py:243-250`) preserved unchanged; this adds
   a softer, non-fatal classification on top.
 - Worker `handle`/`handle_request`, keepalive semantics, and the
@@ -265,8 +265,8 @@ Implemented:
   dispatches to the expected lane.
 - **Integration — flood isolation**: app with a known-slow route flooded
   concurrently; assert fast-route latency stays low and slow requests never
-  occupy fast workers; assert 503 once the slow lane is full.
+  occupy fast workers.
 - **Integration — cold start**: never-seen slow route burst ⇒ confirm the lane
   flips to slow within ~one threshold interval via mid-flight learning.
-- **Regression**: `slow_request_threshold = 0` ⇒ current behavior; keepalive,
-  SSL, and graceful shutdown paths still pass existing tests.
+- **Regression**: `enable_adaptive_queueing = False` ⇒ current behavior; keepalive, SSL, and
+  graceful shutdown paths still pass existing tests.

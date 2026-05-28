@@ -76,24 +76,22 @@ class ThreadWorker(base.Worker):
         super().__init__(*args, **kwargs)
         self.worker_connections = self.cfg.worker_connections
         self.max_keepalived = self.cfg.worker_connections - self.cfg.threads
+        # request routing: when adaptive queueing is enabled, the configured
+        # threads are split into a fast lane and a slow lane so slow requests
+        # cannot starve fast ones
+        self.routing_enabled = (
+            self.cfg.enable_adaptive_queueing and self.cfg.threads >= 2)
+        self.slow_threshold = self.cfg.slow_request_threshold
         # initialise the pool(s): a single pool when routing is disabled, or a
         # separate fast (``self.tpool``) and slow pool when it is enabled
         self.tpool = None
         self.slow_pool = None
-        # number of slow requests submitted but not yet finished, used to bound
-        # the slow lane (running + queued) and shed load with 503
-        self.nr_slow = 0
         self.poller = None
         self.shutdown_event = os.eventfd(0)
         self._lock = None
         self.futures = deque()
         self._keep = deque()
         self.nr_conns = 0
-
-        # request routing: when a slow-request threshold is configured, slow
-        # requests are routed to a separate lane so they cannot starve fast ones
-        self.slow_threshold = self.cfg.slow_request_threshold
-        self.routing_enabled = self.slow_threshold > 0
         self.predictor = None
 
     @classmethod
@@ -104,14 +102,21 @@ class ThreadWorker(base.Worker):
             log.warning("No keepalived connections can be handled. " +
                         "Check the number of worker connections and threads.")
 
+        if cfg.enable_adaptive_queueing and cfg.threads < 2:
+            log.warning("enable_adaptive_queueing requires at least 2 threads; "
+                        "running with a single pool.")
+
     def init_process(self):
-        self.tpool = self.get_thread_pool()
         if self.routing_enabled:
+            # split the configured threads roughly evenly between the two
+            # lanes; the fast lane gets the extra thread when threads is odd
+            slow = self.cfg.threads // 2
+            fast = self.cfg.threads - slow
+            self.tpool = futures.ThreadPoolExecutor(max_workers=fast)
+            self.slow_pool = futures.ThreadPoolExecutor(max_workers=slow)
             self.predictor = SlowRoutePredictor(self.slow_threshold)
-            # a dedicated pool for the slow lane: slow requests can never
-            # occupy the fast pool's (``self.tpool``) threads
-            self.slow_pool = futures.ThreadPoolExecutor(
-                max_workers=self.cfg.slow_threads)
+        else:
+            self.tpool = self.get_thread_pool()
         self.poller = selectors.DefaultSelector()
         self._lock = RLock()
         super().init_process()
@@ -148,15 +153,7 @@ class ThreadWorker(base.Worker):
 
     def enqueue_req(self, conn, slow=False):
         conn.init()
-        # submit the connection to the appropriate pool
         if self.routing_enabled and slow:
-            cap = self.cfg.slow_queue_maxsize
-            if cap and self.nr_slow >= self.cfg.slow_threads + cap:
-                # slow lane (running + queued) is full; shed load with 503
-                # instead of letting the slow queue grow unbounded
-                self.reject_overloaded(conn)
-                return
-            self.nr_slow += 1
             fs = self.slow_pool.submit(self.handle, conn)
         else:
             fs = self.tpool.submit(self.handle, conn)
@@ -261,22 +258,6 @@ class ThreadWorker(base.Worker):
         except UnicodeDecodeError:
             return None
         return method + " " + path
-
-    def reject_overloaded(self, conn):
-        """Reject a connection with 503 because the slow lane is saturated."""
-        self.nr_conns -= 1
-        try:
-            conn.sock.setblocking(True)
-            conn.sock.sendall(
-                b"HTTP/1.1 503 Service Unavailable\r\n"
-                b"Connection: close\r\n"
-                b"Content-Length: 0\r\n"
-                b"Retry-After: %d\r\n\r\n"
-                % int(self.cfg.slow_lane_retry_after))
-        except OSError:
-            pass
-        finally:
-            conn.close()
 
     def reuse_connection(self, conn, client):
         with self._lock:
@@ -410,10 +391,6 @@ class ThreadWorker(base.Worker):
         futures.wait(self.futures, timeout=self.cfg.graceful_timeout)
 
     def finish_request(self, fs):
-        # the slow request is done (whatever the outcome): free its slow slot
-        if self.routing_enabled and fs.slow:
-            self.nr_slow -= 1
-
         if fs.cancelled():
             self.nr_conns -= 1
             fs.conn.close()
