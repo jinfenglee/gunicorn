@@ -33,12 +33,6 @@ def test_predictor_observe_slow_marks_immediately():
     assert p.is_slow("POST /report") is True
 
 
-def test_predictor_seed_patterns():
-    p = SlowRoutePredictor(threshold=1.0, seed_patterns=[r"^POST /reports/"])
-    assert p.is_slow("POST /reports/generate") is True
-    assert p.is_slow("GET /reports/generate") is False
-
-
 def test_predictor_lru_bound():
     p = SlowRoutePredictor(threshold=1.0, max_entries=10)
     for i in range(50):

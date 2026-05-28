@@ -163,9 +163,6 @@ New settings, mirroring `WorkerThreads` (`config.py:697`):
 - `slow_threads` — `S`, slow-lane worker count. Default `1`.
 - `slow_queue_maxsize` — bound on `slow_q`; overflow ⇒ `503`. Default e.g. `100`
   (`0` = unbounded).
-- `slow_routes` — optional list of regex route patterns (matched with
-  `re.search` against the route key) operators know are slow, seeded into the
-  predictor so even the *first* request routes correctly.
 - `slow_lane_retry_after` — seconds for the `Retry-After` header on 503.
 
 A `slow_route_key` hook to customize the route key (e.g. collapse
@@ -198,9 +195,8 @@ A small, self-contained, thread-safe object:
 - `update(route_key, duration)`: EWMA with decay so a route that becomes fast
   again eventually returns to the fast lane (avoids permanent misclassification
   after a one-off slow spike). Called on every completion.
-- `is_slow(route_key)`: `True` if the route matches a seeded `slow_routes`
-  pattern, or its `ewma_seconds >= slow_request_threshold`. Unknown routes ⇒
-  `False` (fast) by default.
+- `is_slow(route_key)`: `True` if its `ewma_seconds >= slow_request_threshold`.
+  Unknown routes ⇒ `False` (fast) by default.
 - Optional hysteresis (separate promote/demote thresholds) to avoid flapping
   around the boundary.
 
@@ -216,19 +212,17 @@ A small, self-contained, thread-safe object:
    request — we can't). This shortens the learning window when many requests to a
    brand-new slow route arrive at once: subsequent ones in the burst route to the
    slow lane after one threshold interval instead of after a full slow request.
-3. **Seeding (eliminates the first-occurrence window for known offenders)**:
-   `slow_routes` patterns mark routes slow from the very first request.
 
 ## 6. Behavior under load (the cases that matter)
 
-- **Flood of a known/seeded or previously-seen slow route**: every such request
+- **Flood of a previously-seen slow route**: every such request
   is routed to the slow pool. The `F` fast threads are never given this work and
   keep serving fast traffic at full capacity. When the slow lane reaches
   `S + slow_queue_maxsize`, further slow requests get a fast `503` — backpressure
   is contained to the slow lane.
 - **Flood of a never-seen slow route**: the first occurrence(s) run in the fast
   lane; mid-flight learning (§5.4.2) flips the route to slow after one threshold
-  interval, so the flood is contained quickly. Seeding avoids even this window.
+  interval, so the flood is contained quickly.
 - **Mixed fast traffic, idle slow lane**: the `S` slow threads stay parked (no
   work stealing in this design — see §3), so fast throughput is `F`, not `F + S`.
 - **Misprediction (route marked slow but now fast)**: handled gracefully — it
@@ -239,7 +233,7 @@ A small, self-contained, thread-safe object:
 Implemented:
 
 - `config.py` — `slow_request_threshold`, `slow_threads`, `slow_queue_maxsize`,
-  `slow_routes`, `slow_lane_retry_after`, plus `validate_pos_float`.
+  `slow_lane_retry_after`, plus `validate_pos_float`.
 - `gthread.py` `init_process`/`get_thread_pool` — build `fast_pool` and
   `slow_pool` (or the single legacy pool when disabled); `_shutdown_pools`.
 - `gthread.py` `enqueue_req` — route to the matching pool; `nr_slow` bound +

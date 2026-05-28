@@ -107,10 +107,7 @@ class ThreadWorker(base.Worker):
     def init_process(self):
         self.tpool = self.get_thread_pool()
         if self.routing_enabled:
-            self.predictor = SlowRoutePredictor(
-                self.slow_threshold,
-                seed_patterns=self.cfg.slow_routes,
-            )
+            self.predictor = SlowRoutePredictor(self.slow_threshold)
             # a dedicated pool for the slow lane: slow requests can never
             # occupy the fast pool's (``self.tpool``) threads
             self.slow_pool = futures.ThreadPoolExecutor(

@@ -823,30 +823,6 @@ class SlowQueueMaxsize(Setting):
         """
 
 
-class SlowRoutes(Setting):
-    name = "slow_routes"
-    section = "Worker Processes"
-    cli = ["--slow-route"]
-    action = "append"
-    meta = "PATTERN"
-    validator = validate_list_string
-    default = []
-    desc = """\
-        Regular expression(s) matching routes that should always be treated as
-        slow, regardless of observed timings.
-
-        Each pattern is matched (using ``re.search``) against the route key,
-        which is the request method and path joined by a space, e.g.
-        ``"POST /reports/generate"``. Seeding known-slow routes avoids the brief
-        window where a never-before-seen slow route is learned.
-
-        Only used by the ``gthread`` worker when
-        :ref:`slow-request-threshold` is set.
-
-        .. versionadded:: 23.1.0
-        """
-
-
 class SlowLaneRetryAfter(Setting):
     name = "slow_lane_retry_after"
     section = "Worker Processes"

@@ -6,12 +6,11 @@
 
 The :class:`SlowRoutePredictor` decides, before a request is handed to a
 worker, whether its route is expected to be slow, based on previously observed
-timings of the same route (method + path) plus operator-seeded patterns. The
-gthread worker uses this to route slow requests to a dedicated thread pool so
-they cannot starve fast requests.
+timings of the same route (method + path). The gthread worker uses this to
+route slow requests to a dedicated thread pool so they cannot starve fast
+requests.
 """
 
-import re
 import threading
 from collections import OrderedDict
 
@@ -22,26 +21,19 @@ class SlowRoutePredictor:
     Timings are tracked per route as an exponentially weighted moving average
     (EWMA) so that a route which becomes fast again decays back below the
     threshold. The table is bounded (LRU) to cap memory under high route
-    cardinality. Operator-seeded regex patterns always classify as slow.
+    cardinality.
     """
 
-    def __init__(self, threshold, max_entries=1024, alpha=0.3,
-                 seed_patterns=None):
+    def __init__(self, threshold, max_entries=1024, alpha=0.3):
         self.threshold = threshold
         self.alpha = alpha
         self.max_entries = max_entries
         self._stats = OrderedDict()
         self._lock = threading.Lock()
-        self._seed = [re.compile(p) for p in (seed_patterns or [])]
-
-    def _seeded(self, key):
-        return any(p.search(key) for p in self._seed)
 
     def is_slow(self, key):
         if not key:
             return False
-        if self._seeded(key):
-            return True
         with self._lock:
             ewma = self._stats.get(key)
             if ewma is None:
