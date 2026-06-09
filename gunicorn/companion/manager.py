@@ -58,6 +58,57 @@ class CompanionManager:
             os._exit(1)
         os._exit(0)
 
+    def reap_processes(self) -> list:
+        """Reap any companions that have exited and record their exit info.
+
+        ``waitpid(-1, WNOHANG)`` asks the kernel for any dead child without
+        blocking: it returns ``(pid, status)`` for one reaped child, or
+        ``(0, 0)`` when none are waiting. We loop so a single call clears the
+        whole backlog (several children can die between ticks), and stop on
+        ``ChildProcessError`` which means there are no children left at all.
+        Each reaped pid is matched back to its companion. Deciding whether to
+        restart belongs to the run loop; here we only record the exit and free
+        the pid, returning the companions that were reaped.
+        """
+        reaped = []
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if pid == 0:
+                break
+            proc = self._process_by_pid(pid)
+            if proc is not None:
+                self._record_exit(proc, status)
+                reaped.append(proc)
+        return reaped
+
+    def _process_by_pid(self, pid: int):
+        for proc in self.processes.values():
+            if proc.pid == pid:
+                return proc
+        return None
+
+    @staticmethod
+    def _record_exit(proc: CompanionProcess, status: int) -> None:
+        """Store how a companion died: signal number or exit code, plus time.
+
+        ``status`` is the packed value from ``waitpid``. ``WIFSIGNALED`` tells
+        us a signal killed it, in which case ``WTERMSIG`` gives the signal
+        number; otherwise it exited normally and ``WEXITSTATUS`` gives its exit
+        code. Only one of the two is ever set, so the other is cleared.
+        """
+        if os.WIFSIGNALED(status):
+            proc.last_exit_signal = os.WTERMSIG(status)
+            proc.last_exit_code = None
+        else:
+            proc.last_exit_code = os.WEXITSTATUS(status)
+            proc.last_exit_signal = None
+        proc.exited_at = time.time()
+        proc.exit_count += 1
+        proc.pid = None
+
     @staticmethod
     def _apply_environment(config: CompanionConfig) -> None:
         """Apply ``cwd`` and ``env`` in the child before running the target.

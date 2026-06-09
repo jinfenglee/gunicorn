@@ -95,6 +95,36 @@ def test_redirect_output_inherit_noop():
     dup2.assert_not_called()
 
 
+def test_reap_records_exit_code():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.pid = 4321
+    # exit code 1 -> status 1<<8; second call drains the queue.
+    with mock.patch("os.waitpid", side_effect=[(4321, 1 << 8), (0, 0)]):
+        reaped = mgr.reap_processes()
+    assert reaped == [proc]
+    assert proc.last_exit_code == 1
+    assert proc.last_exit_signal is None
+    assert proc.exit_count == 1
+    assert proc.pid is None
+
+
+def test_reap_records_signal():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.pid = 4321
+    with mock.patch("os.waitpid", side_effect=[(4321, 9), (0, 0)]):
+        mgr.reap_processes()
+    assert proc.last_exit_signal == 9
+    assert proc.last_exit_code is None
+
+
+def test_reap_no_children():
+    mgr = make_manager("rq")
+    with mock.patch("os.waitpid", side_effect=ChildProcessError):
+        assert mgr.reap_processes() == []
+
+
 def test_spawn_parent_records_pid_and_starting():
     mgr = make_manager("rq")
     proc = mgr.processes["rq"]
