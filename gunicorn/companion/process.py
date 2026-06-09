@@ -78,15 +78,15 @@ class CompanionConfig:
         # target has no stable repr across runs, so use its qualified name.
         data = self.to_dict()
         data["target"] = self._target_key(self.target)
-        blob = json.dumps(data, sort_keys=True, default=str)
-        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+        payload = json.dumps(data, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _target_key(target):
         if callable(target):
-            mod = getattr(target, "__module__", "")
-            qual = getattr(target, "__qualname__", repr(target))
-            return "%s:%s" % (mod, qual)
+            module = getattr(target, "__module__", "")
+            qualified_name = getattr(target, "__qualname__", repr(target))
+            return "%s:%s" % (module, qualified_name)
         return str(target)
 
     def __repr__(self):
@@ -146,8 +146,8 @@ class CompanionProcess:
                 format_uptime(self.uptime(now) or 0),
             )
         if self.state == State.BACKOFF and self.next_retry_at is not None:
-            left = max(0, int(self.next_retry_at - now))
-            return "exited with %s, retrying in %ds" % (self._exit_status(), left)
+            seconds_left = max(0, int(self.next_retry_at - now))
+            return "exited with %s, retrying in %ds" % (self._exit_status(), seconds_left)
         if self.state == State.BACKOFF:
             return "exited with %s" % self._exit_status()
         if self.state == State.STOPPED and self.manual_stop:

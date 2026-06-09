@@ -35,7 +35,7 @@ class CompanionManager:
         # validates companion config, returning a fresh CompanionConfig list.
         self.config_loader = None
 
-    def handle_command(self, obj: dict) -> dict:
+    def handle_command(self, command: dict) -> dict:
         """Route a decoded control command to its action.
 
         This is the ``dispatch`` the control socket calls. ``status`` returns a
@@ -44,37 +44,37 @@ class CompanionManager:
         commands need a string ``name``, and anything else raises ``CommandError`` so the
         socket replies with an error envelope.
         """
-        cmd = obj["cmd"]
-        if cmd == "status":
+        command_name = command["cmd"]
+        if command_name == "status":
             return {"ok": True, "companions": self.status()}
-        if cmd == "reread":
+        if command_name == "reread":
             if self.config_loader is None:
                 raise CommandError("reread not configured")
             try:
                 new_configs = self.config_loader()
-            except Exception as e:
-                return {"ok": False, "error": "invalid config: %s" % e,
+            except Exception as error:
+                return {"ok": False, "error": "invalid config: %s" % error,
                         "kept_old_config": True}
             return self.reread_config(new_configs)
 
         # Every remaining command acts on one named companion.
-        name = obj.get("name")
+        name = command.get("name")
         if not isinstance(name, str):
-            raise CommandError("'%s' requires a 'name'" % cmd)
-        if cmd == "start":
+            raise CommandError("'%s' requires a 'name'" % command_name)
+        if command_name == "start":
             ok, message = self.start_process(name)
-        elif cmd == "stop":
+        elif command_name == "stop":
             ok, message = self.stop_process(name)
-        elif cmd == "restart":
+        elif command_name == "restart":
             ok, message = self.restart_process(name)
         else:
-            raise CommandError("unknown command %r" % cmd)
+            raise CommandError("unknown command %r" % command_name)
         return {"ok": ok, "message": message}
 
     def status(self, now: float = None) -> list:
         """Status entry for every companion, for the ``status`` command."""
         now = now or time.time()
-        return [proc.status_dict(now) for proc in self.processes.values()]
+        return [process.status_dict(now) for process in self.processes.values()]
 
     def reread_config(self, new_configs) -> dict:
         """Transactionally apply a fresh set of companion configs.
@@ -101,18 +101,18 @@ class CompanionManager:
             removed.append(name)
 
         for name in new_names - old_names:
-            proc = CompanionProcess(new_by_name[name])
-            self.processes[name] = proc
-            self.spawn_process(proc)
+            process = CompanionProcess(new_by_name[name])
+            self.processes[name] = process
+            self.spawn_process(process)
             added.append(name)
 
         for name in new_names & old_names:
-            proc = self.processes[name]
-            if proc.config.config_hash == new_by_name[name].config_hash:
+            process = self.processes[name]
+            if process.config.config_hash == new_by_name[name].config_hash:
                 unchanged.append(name)
                 continue
-            proc.config = new_by_name[name]
-            if proc.manual_stop:
+            process.config = new_by_name[name]
+            if process.manual_stop:
                 unchanged.append(name)
             else:
                 self.restart_process(name)
@@ -132,7 +132,7 @@ class CompanionManager:
             by_name[config.name] = config
         return by_name
 
-    def spawn_process(self, proc: CompanionProcess) -> int:
+    def spawn_process(self, process: CompanionProcess) -> int:
         """Fork one companion.
 
         Parent records the pid and moves the companion to STARTING. Child
@@ -146,21 +146,21 @@ class CompanionManager:
         """
         pid = os.fork()
         if pid != 0:
-            proc.pid = pid
-            proc.state = State.STARTING
-            proc.started_at = time.time()
-            self.log.info("companion %s started (pid %s)", proc.name, pid)
+            process.pid = pid
+            process.state = State.STARTING
+            process.started_at = time.time()
+            self.log.info("companion %s started (pid %s)", process.name, pid)
             return pid
 
         try:
-            self._apply_environment(proc.config)
-            self._redirect_output(proc.config)
-            target = self._resolve_target(proc.config.target)
+            self._apply_environment(process.config)
+            self._redirect_output(process.config)
+            target = self._resolve_target(process.config.target)
             target()
         except SystemExit:
             raise
         except BaseException:
-            self.log.exception("companion %s crashed", proc.name)
+            self.log.exception("companion %s crashed", process.name)
             os._exit(1)
         os._exit(0)
 
@@ -173,16 +173,16 @@ class CompanionManager:
         without doing anything. STOPPING is rejected so the caller polls status
         and retries once the old child is gone. Returns ``(ok, message)``.
         """
-        proc = self.processes.get(name)
-        if proc is None:
+        process = self.processes.get(name)
+        if process is None:
             return False, "unknown companion %s" % name
-        if proc.state in (State.RUNNING, State.STARTING):
-            return True, "%s already %s" % (name, proc.state.lower())
-        if proc.state == State.STOPPING:
+        if process.state in (State.RUNNING, State.STARTING):
+            return True, "%s already %s" % (name, process.state.lower())
+        if process.state == State.STOPPING:
             return False, "%s is stopping; retry" % name
-        proc.manual_stop = False
-        proc.next_retry_at = None
-        self.spawn_process(proc)
+        process.manual_stop = False
+        process.next_retry_at = None
+        self.spawn_process(process)
         return True, "%s started" % name
 
     def stop_process(self, name: str, now: float = None):
@@ -195,21 +195,21 @@ class CompanionManager:
         settles in STOPPED. STOPPED and STOPPING are already-there success
         no-ops. Returns ``(ok, message)``.
         """
-        proc = self.processes.get(name)
-        if proc is None:
+        process = self.processes.get(name)
+        if process is None:
             return False, "unknown companion %s" % name
-        proc.manual_stop = True
-        if proc.state in (State.STOPPED, State.STOPPING):
-            return True, "%s already %s" % (name, proc.state.lower())
-        if proc.state == State.BACKOFF:
-            proc.next_retry_at = None
-            proc.state = State.STOPPED
+        process.manual_stop = True
+        if process.state in (State.STOPPED, State.STOPPING):
+            return True, "%s already %s" % (name, process.state.lower())
+        if process.state == State.BACKOFF:
+            process.next_retry_at = None
+            process.state = State.STOPPED
             return True, "%s stopped" % name
         now = now or time.time()
-        os.kill(proc.pid, self._signal_number(proc.config.stop_signal))
-        proc.state = State.STOPPING
-        proc.stop_deadline = now + proc.config.stop_timeout
-        self.log.info("companion %s stopping (pid %s)", name, proc.pid)
+        os.kill(process.pid, self._signal_number(process.config.stop_signal))
+        process.state = State.STOPPING
+        process.stop_deadline = now + process.config.stop_timeout
+        self.log.info("companion %s stopping (pid %s)", name, process.pid)
         return True, "%s stopping" % name
 
     def restart_process(self, name: str, now: float = None):
@@ -222,26 +222,26 @@ class CompanionManager:
         STOPPED start again immediately. STOPPING is rejected so the caller
         retries. This never rereads config. Returns ``(ok, message)``.
         """
-        proc = self.processes.get(name)
-        if proc is None:
+        process = self.processes.get(name)
+        if process is None:
             return False, "unknown companion %s" % name
-        if proc.state == State.STOPPING:
+        if process.state == State.STOPPING:
             return False, "%s is stopping; retry" % name
-        proc.manual_stop = False
-        if proc.state in (State.RUNNING, State.STARTING):
+        process.manual_stop = False
+        if process.state in (State.RUNNING, State.STARTING):
             now = now or time.time()
-            proc.restart_pending = True
-            os.kill(proc.pid, self._signal_number(proc.config.stop_signal))
-            proc.state = State.STOPPING
-            proc.stop_deadline = now + proc.config.reload_timeout
-            self.log.info("companion %s restarting (pid %s)", name, proc.pid)
+            process.restart_pending = True
+            os.kill(process.pid, self._signal_number(process.config.stop_signal))
+            process.state = State.STOPPING
+            process.stop_deadline = now + process.config.reload_timeout
+            self.log.info("companion %s restarting (pid %s)", name, process.pid)
             return True, "%s restarting" % name
-        proc.next_retry_at = None
-        self.spawn_process(proc)
+        process.next_retry_at = None
+        self.spawn_process(process)
         return True, "%s started" % name
 
     @staticmethod
-    def _signal_number(sig) -> int:
+    def _signal_number(stop_signal) -> int:
         """Resolve a stop signal to its number, e.g. ``"SIGTERM"`` -> 15.
 
         Accepts a signal name or a raw number and validates both against the
@@ -249,9 +249,11 @@ class CompanionManager:
         than silently sending the wrong signal (or none).
         """
         try:
-            return signal.Signals[sig] if isinstance(sig, str) else signal.Signals(sig)
+            if isinstance(stop_signal, str):
+                return signal.Signals[stop_signal]
+            return signal.Signals(stop_signal)
         except (KeyError, ValueError):
-            raise ValueError("unknown stop signal %r" % (sig,))
+            raise ValueError("unknown stop signal %r" % (stop_signal,))
 
     def reap_processes(self) -> list:
         """Reap any companions that have exited and record their exit info.
@@ -282,14 +284,14 @@ class CompanionManager:
                 break
             if pid == 0:
                 break
-            proc = self._process_by_pid(pid)
-            if proc is not None:
-                self._record_exit(proc, status)
-                self.handle_exit(proc)
-                reaped.append(proc)
+            process = self._process_by_pid(pid)
+            if process is not None:
+                self._record_exit(process, status)
+                self.handle_exit(process)
+                reaped.append(process)
         return reaped
 
-    def handle_exit(self, proc: CompanionProcess, now: float = None) -> None:
+    def handle_exit(self, process: CompanionProcess, now: float = None) -> None:
         """Decide a companion's fate after it exits: restart, stop, or back off.
 
         A pending restart wins: the old child was asked to stop only so a fresh
@@ -300,19 +302,19 @@ class CompanionManager:
         backoff, no retry cap).
         """
         now = now or time.time()
-        if proc.restart_pending:
-            proc.restart_pending = False
-            proc.restart_count += 1
-            self.spawn_process(proc)
+        if process.restart_pending:
+            process.restart_pending = False
+            process.restart_count += 1
+            self.spawn_process(process)
             return
-        if proc.manual_stop:
-            proc.state = State.STOPPED
-            proc.next_retry_at = None
+        if process.manual_stop:
+            process.state = State.STOPPED
+            process.next_retry_at = None
             return
-        proc.state = State.BACKOFF
-        proc.next_retry_at = now + proc.restart_delay
+        process.state = State.BACKOFF
+        process.next_retry_at = now + process.restart_delay
         self.log.info("companion %s exited, retrying in %ss",
-                      proc.name, proc.restart_delay)
+                      process.name, process.restart_delay)
 
     def retry_backoff(self, now: float = None) -> list:
         """Respawn BACKOFF companions whose fixed retry delay has elapsed.
@@ -322,14 +324,14 @@ class CompanionManager:
         """
         now = now or time.time()
         retried = []
-        for proc in self.processes.values():
-            if proc.state != State.BACKOFF or proc.next_retry_at is None:
+        for process in self.processes.values():
+            if process.state != State.BACKOFF or process.next_retry_at is None:
                 continue
-            if now >= proc.next_retry_at:
-                proc.restart_count += 1
-                proc.next_retry_at = None
-                self.spawn_process(proc)
-                retried.append(proc)
+            if now >= process.next_retry_at:
+                process.restart_count += 1
+                process.next_retry_at = None
+                self.spawn_process(process)
+                retried.append(process)
         return retried
 
     def promote_running(self, now: float = None) -> list:
@@ -341,23 +343,23 @@ class CompanionManager:
         """
         now = now or time.time()
         promoted = []
-        for proc in self.processes.values():
-            if proc.state != State.STARTING or proc.started_at is None:
+        for process in self.processes.values():
+            if process.state != State.STARTING or process.started_at is None:
                 continue
-            if now - proc.started_at >= proc.config.startsecs:
-                proc.state = State.RUNNING
-                self.log.info("companion %s running (pid %s)", proc.name, proc.pid)
-                promoted.append(proc)
+            if now - process.started_at >= process.config.startsecs:
+                process.state = State.RUNNING
+                self.log.info("companion %s running (pid %s)", process.name, process.pid)
+                promoted.append(process)
         return promoted
 
     def _process_by_pid(self, pid: int):
-        for proc in self.processes.values():
-            if proc.pid == pid:
-                return proc
+        for process in self.processes.values():
+            if process.pid == pid:
+                return process
         return None
 
     @staticmethod
-    def _record_exit(proc: CompanionProcess, status: int) -> None:
+    def _record_exit(process: CompanionProcess, status: int) -> None:
         """Store how a companion died: signal number or exit code, plus time.
 
         ``status`` is the packed value from ``waitpid``. ``WIFSIGNALED`` tells
@@ -366,14 +368,14 @@ class CompanionManager:
         code. Only one of the two is ever set, so the other is cleared.
         """
         if os.WIFSIGNALED(status):
-            proc.last_exit_signal = os.WTERMSIG(status)
-            proc.last_exit_code = None
+            process.last_exit_signal = os.WTERMSIG(status)
+            process.last_exit_code = None
         else:
-            proc.last_exit_code = os.WEXITSTATUS(status)
-            proc.last_exit_signal = None
-        proc.exited_at = time.time()
-        proc.exit_count += 1
-        proc.pid = None
+            process.last_exit_code = os.WEXITSTATUS(status)
+            process.last_exit_signal = None
+        process.exited_at = time.time()
+        process.exit_count += 1
+        process.pid = None
 
     @staticmethod
     def _apply_environment(config: CompanionConfig) -> None:
@@ -397,15 +399,15 @@ class CompanionManager:
         we append the output there instead. For stderr you can also pass
         ``"stdout"`` to fold the two streams into one file.
         """
-        out = CompanionManager._open_output(config.stdout)
-        if out is not None:
-            os.dup2(out, 1)
+        stdout_fd = CompanionManager._open_output(config.stdout)
+        if stdout_fd is not None:
+            os.dup2(stdout_fd, 1)
         if config.stderr == "stdout":
             os.dup2(1, 2)
         else:
-            err = CompanionManager._open_output(config.stderr)
-            if err is not None:
-                os.dup2(err, 2)
+            stderr_fd = CompanionManager._open_output(config.stderr)
+            if stderr_fd is not None:
+                os.dup2(stderr_fd, 2)
 
     @staticmethod
     def _open_output(value):
@@ -424,7 +426,7 @@ class CompanionManager:
         """
         if callable(target):
             return target
-        module, sep, attr = target.partition(":")
-        if not sep:
+        module_name, separator, attribute = target.partition(":")
+        if not separator:
             raise ValueError("companion target %r must be 'module:callable'" % target)
-        return getattr(importlib.import_module(module), attr)
+        return getattr(importlib.import_module(module_name), attribute)

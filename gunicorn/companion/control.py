@@ -25,19 +25,19 @@ def decode_command(line):
     JSON object carrying a string ``cmd``; anything else is a ``CommandError``.
     """
     try:
-        obj = json.loads(line)
+        command = json.loads(line)
     except (ValueError, TypeError):
         raise CommandError("invalid JSON")
-    if not isinstance(obj, dict):
+    if not isinstance(command, dict):
         raise CommandError("request must be a JSON object")
-    if not isinstance(obj.get("cmd"), str):
+    if not isinstance(command.get("cmd"), str):
         raise CommandError("missing 'cmd'")
-    return obj
+    return command
 
 
-def encode_response(obj):
+def encode_response(response):
     """Encode a response dict as one newline-terminated JSON line of bytes."""
-    return (json.dumps(obj) + "\n").encode("utf-8")
+    return (json.dumps(response) + "\n").encode("utf-8")
 
 
 class ControlServer:
@@ -58,7 +58,7 @@ class ControlServer:
         self.mode = mode
         self.log = log
         self.backlog = backlog
-        self.sock = None
+        self.listener = None
 
     def create(self):
         """Bind and listen on the Unix socket, replacing any stale one.
@@ -69,18 +69,18 @@ class ControlServer:
         """
         if os.path.exists(self.path):
             os.unlink(self.path)
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.bind(self.path)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(self.path)
         os.chmod(self.path, self.mode)
-        sock.listen(self.backlog)
-        self.sock = sock
-        return sock
+        listener.listen(self.backlog)
+        self.listener = listener
+        return listener
 
     def close(self):
         """Close the listening socket and remove its file."""
-        if self.sock is not None:
-            self.sock.close()
-            self.sock = None
+        if self.listener is not None:
+            self.listener.close()
+            self.listener = None
         if os.path.exists(self.path):
             os.unlink(self.path)
 
@@ -93,25 +93,25 @@ class ControlServer:
         """
         try:
             response = self.dispatch(decode_command(line))
-        except CommandError as e:
-            response = {"ok": False, "error": str(e)}
+        except CommandError as error:
+            response = {"ok": False, "error": str(error)}
         return encode_response(response)
 
-    def serve_connection(self, conn):
+    def serve_connection(self, connection):
         """Serve newline-delimited requests on one accepted connection.
 
         Reads until the client hangs up, buffering partial reads and answering
         each complete line as it arrives. A trailing fragment without a newline
         is ignored.
         """
-        buf = b""
-        with conn:
+        buffer = b""
+        with connection:
             while True:
-                chunk = conn.recv(65536)
+                chunk = connection.recv(65536)
                 if not chunk:
                     break
-                buf += chunk
-                while b"\n" in buf:
-                    line, buf = buf.split(b"\n", 1)
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
                     if line.strip():
-                        conn.sendall(self.handle_line(line))
+                        connection.sendall(self.handle_line(line))
