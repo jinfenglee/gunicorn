@@ -8,6 +8,7 @@ from unittest import mock
 
 import pytest
 
+from gunicorn.companion.control import CommandError
 from gunicorn.companion.manager import CompanionManager
 from gunicorn.companion.process import CompanionConfig, State
 
@@ -124,6 +125,51 @@ def test_reap_no_children():
     mgr = make_manager("rq")
     with mock.patch("os.waitpid", side_effect=ChildProcessError):
         assert mgr.reap_processes() == []
+
+
+def test_status_lists_all_companions():
+    mgr = make_manager("rq", "scheduler")
+    entries = mgr.status(now=100.0)
+    assert {e["name"] for e in entries} == {"rq", "scheduler"}
+    assert all("state" in e and "description" in e for e in entries)
+
+
+def test_handle_command_status():
+    mgr = make_manager("rq")
+    resp = mgr.handle_command({"cmd": "status"})
+    assert resp["ok"] is True
+    assert resp["companions"][0]["name"] == "rq"
+
+
+def test_handle_command_start_routes():
+    mgr = make_manager("rq")
+    with mock.patch.object(mgr, "start_process",
+                           return_value=(True, "rq started")) as sp:
+        resp = mgr.handle_command({"cmd": "start", "name": "rq"})
+    sp.assert_called_once_with("rq")
+    assert resp == {"ok": True, "message": "rq started"}
+
+
+def test_handle_command_stop_and_restart_route():
+    mgr = make_manager("rq")
+    with mock.patch.object(mgr, "stop_process", return_value=(True, "s")) as st, \
+            mock.patch.object(mgr, "restart_process", return_value=(True, "r")) as rt:
+        mgr.handle_command({"cmd": "stop", "name": "rq"})
+        mgr.handle_command({"cmd": "restart", "name": "rq"})
+    st.assert_called_once_with("rq")
+    rt.assert_called_once_with("rq")
+
+
+def test_handle_command_missing_name():
+    mgr = make_manager("rq")
+    with pytest.raises(CommandError):
+        mgr.handle_command({"cmd": "start"})
+
+
+def test_handle_command_unknown():
+    mgr = make_manager("rq")
+    with pytest.raises(CommandError):
+        mgr.handle_command({"cmd": "reread"})
 
 
 def test_start_process_stopped_spawns():

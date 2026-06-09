@@ -11,6 +11,7 @@ import signal
 import time
 from typing import TYPE_CHECKING, Callable, Iterable, Union
 
+from gunicorn.companion.control import CommandError
 from gunicorn.companion.process import CompanionProcess, State
 
 if TYPE_CHECKING:
@@ -30,6 +31,38 @@ class CompanionManager:
         self.log = log
         self.pid = os.getpid()
         self.processes = {c.name: CompanionProcess(c) for c in configs}
+
+    def handle_command(self, obj: dict) -> dict:
+        """Route a decoded control command to its action.
+
+        This is the ``dispatch`` the control socket calls. ``status`` returns a
+        snapshot of every companion; ``start``/``stop``/``restart`` act on the
+        one named companion and report ``(ok, message)``. Per-companion
+        commands need a string ``name``, and anything else raises ``CommandError`` so the
+        socket replies with an error envelope.
+        """
+        cmd = obj["cmd"]
+        if cmd == "status":
+            return {"ok": True, "companions": self.status()}
+
+        # Every remaining command acts on one named companion.
+        name = obj.get("name")
+        if not isinstance(name, str):
+            raise CommandError("'%s' requires a 'name'" % cmd)
+        if cmd == "start":
+            ok, message = self.start_process(name)
+        elif cmd == "stop":
+            ok, message = self.stop_process(name)
+        elif cmd == "restart":
+            ok, message = self.restart_process(name)
+        else:
+            raise CommandError("unknown command %r" % cmd)
+        return {"ok": ok, "message": message}
+
+    def status(self, now: float = None) -> list:
+        """Status entry for every companion, for the ``status`` command."""
+        now = now or time.time()
+        return [proc.status_dict(now) for proc in self.processes.values()]
 
     def spawn_process(self, proc: CompanionProcess) -> int:
         """Fork one companion.

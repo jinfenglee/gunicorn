@@ -683,10 +683,10 @@ No per-companion logic in Arbiter.
 - [x] Preserve and clear `manual_stop` correctly.
 - [x] Add Unix control socket.
 - [x] Implement JSON command protocol.
-- [ ] Implement `status`.
-- [ ] Implement `start`.
-- [ ] Implement `stop`.
-- [ ] Implement `restart`.
+- [x] Implement `status`.
+- [x] Implement `start`.
+- [x] Implement `stop`.
+- [x] Implement `restart`.
 - [ ] Implement transactional `reread`.
 - [ ] Add manager spawn/reap logic in Arbiter.
 - [ ] Add manager shutdown handling in Arbiter.
