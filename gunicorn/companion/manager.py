@@ -58,6 +58,27 @@ class CompanionManager:
             os._exit(1)
         os._exit(0)
 
+    def start_process(self, name: str):
+        """Start a companion by name (the control ``start`` command).
+
+        Follows the supervisor-style rules: a STOPPED or BACKOFF companion
+        clears its ``manual_stop`` flag, drops any pending retry, and is spawned
+        right away. RUNNING and STARTING are already-up, so they report success
+        without doing anything. STOPPING is rejected so the caller polls status
+        and retries once the old child is gone. Returns ``(ok, message)``.
+        """
+        proc = self.processes.get(name)
+        if proc is None:
+            return False, "unknown companion %s" % name
+        if proc.state in (State.RUNNING, State.STARTING):
+            return True, "%s already %s" % (name, proc.state.lower())
+        if proc.state == State.STOPPING:
+            return False, "%s is stopping; retry" % name
+        proc.manual_stop = False
+        proc.next_retry_at = None
+        self.spawn_process(proc)
+        return True, "%s started" % name
+
     def reap_processes(self) -> list:
         """Reap any companions that have exited and record their exit info.
 

@@ -677,7 +677,7 @@ No per-companion logic in Arbiter.
 - [x] Reap exited companion processes.
 - [x] Implement `STARTING -> RUNNING` using `startsecs`.
 - [x] Implement `BACKOFF` with fixed `companion_restart_delay`.
-- [ ] Implement `start_process`.
+- [x] Implement `start_process`.
 - [ ] Implement `stop_process`.
 - [ ] Implement `restart_process`.
 - [ ] Preserve and clear `manual_stop` correctly.

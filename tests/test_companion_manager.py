@@ -125,6 +125,49 @@ def test_reap_no_children():
         assert mgr.reap_processes() == []
 
 
+def test_start_process_stopped_spawns():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    with mock.patch("os.fork", return_value=70) as fork:
+        ok, _ = mgr.start_process("rq")
+    fork.assert_called_once()
+    assert ok and proc.state == State.STARTING and proc.manual_stop is False
+
+
+def test_start_process_backoff_cancels_retry():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.BACKOFF
+    proc.next_retry_at = 999.0
+    proc.manual_stop = True
+    with mock.patch("os.fork", return_value=71):
+        ok, _ = mgr.start_process("rq")
+    assert ok and proc.state == State.STARTING
+    assert proc.next_retry_at is None and proc.manual_stop is False
+
+
+def test_start_process_running_is_noop():
+    mgr = make_manager("rq")
+    mgr.processes["rq"].state = State.RUNNING
+    with mock.patch("os.fork") as fork:
+        ok, _ = mgr.start_process("rq")
+    assert ok
+    fork.assert_not_called()
+
+
+def test_start_process_stopping_rejected():
+    mgr = make_manager("rq")
+    mgr.processes["rq"].state = State.STOPPING
+    ok, msg = mgr.start_process("rq")
+    assert not ok and "stopping" in msg
+
+
+def test_start_process_unknown():
+    mgr = make_manager("rq")
+    ok, _ = mgr.start_process("nope")
+    assert not ok
+
+
 def test_handle_exit_unexpected_backoff():
     mgr = make_manager("rq")
     proc = mgr.processes["rq"]
