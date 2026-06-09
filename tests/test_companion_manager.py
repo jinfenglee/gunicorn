@@ -125,6 +125,36 @@ def test_reap_no_children():
         assert mgr.reap_processes() == []
 
 
+def test_promote_running_after_startsecs():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.config.startsecs = 1
+    proc.state = State.STARTING
+    proc.started_at = 100.0
+    promoted = mgr.promote_running(now=101.5)
+    assert promoted == [proc]
+    assert proc.state == State.RUNNING
+
+
+def test_promote_running_too_early():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.config.startsecs = 5
+    proc.state = State.STARTING
+    proc.started_at = 100.0
+    assert mgr.promote_running(now=102.0) == []
+    assert proc.state == State.STARTING
+
+
+def test_promote_running_ignores_non_starting():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.BACKOFF
+    proc.started_at = 100.0
+    assert mgr.promote_running(now=999.0) == []
+    assert proc.state == State.BACKOFF
+
+
 def test_spawn_parent_records_pid_and_starting():
     mgr = make_manager("rq")
     proc = mgr.processes["rq"]

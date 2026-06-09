@@ -84,6 +84,24 @@ class CompanionManager:
                 reaped.append(proc)
         return reaped
 
+    def promote_running(self, now: float = None) -> list:
+        """Move companions that survived ``startsecs`` from STARTING to RUNNING.
+
+        A freshly spawned companion starts in STARTING. If it stays alive for
+        its ``startsecs`` window it is considered up and becomes RUNNING; if it
+        dies first, reaping handles it instead. Returns the promoted ones.
+        """
+        now = now or time.time()
+        promoted = []
+        for proc in self.processes.values():
+            if proc.state != State.STARTING or proc.started_at is None:
+                continue
+            if now - proc.started_at >= proc.config.startsecs:
+                proc.state = State.RUNNING
+                self.log.info("companion %s running (pid %s)", proc.name, proc.pid)
+                promoted.append(proc)
+        return promoted
+
     def _process_by_pid(self, pid: int):
         for proc in self.processes.values():
             if proc.pid == pid:
