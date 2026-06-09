@@ -110,6 +110,7 @@ class CompanionProcess:
         self.started_at = None
         self.exited_at = None
         self.next_retry_at = None
+        self.stop_deadline = None
 
         self.restart_count = 0
         self.exit_count = 0

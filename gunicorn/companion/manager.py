@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import signal
 import time
 from typing import TYPE_CHECKING, Callable, Iterable, Union
 
@@ -78,6 +79,46 @@ class CompanionManager:
         proc.next_retry_at = None
         self.spawn_process(proc)
         return True, "%s started" % name
+
+    def stop_process(self, name: str, now: float = None):
+        """Stop a companion by name (the control ``stop`` command).
+
+        Sets ``manual_stop`` so the companion will not auto-restart. A live
+        companion (RUNNING or STARTING) is sent its ``stop_signal`` and moved
+        to STOPPING with a ``stop_deadline``; the run loop reaps it, or SIGKILLs
+        it once the deadline passes. BACKOFF just cancels the pending retry and
+        settles in STOPPED. STOPPED and STOPPING are already-there success
+        no-ops. Returns ``(ok, message)``.
+        """
+        proc = self.processes.get(name)
+        if proc is None:
+            return False, "unknown companion %s" % name
+        proc.manual_stop = True
+        if proc.state in (State.STOPPED, State.STOPPING):
+            return True, "%s already %s" % (name, proc.state.lower())
+        if proc.state == State.BACKOFF:
+            proc.next_retry_at = None
+            proc.state = State.STOPPED
+            return True, "%s stopped" % name
+        now = now or time.time()
+        os.kill(proc.pid, self._signal_number(proc.config.stop_signal))
+        proc.state = State.STOPPING
+        proc.stop_deadline = now + proc.config.stop_timeout
+        self.log.info("companion %s stopping (pid %s)", name, proc.pid)
+        return True, "%s stopping" % name
+
+    @staticmethod
+    def _signal_number(sig) -> int:
+        """Resolve a stop signal to its number, e.g. ``"SIGTERM"`` -> 15.
+
+        Accepts a signal name or a raw number and validates both against the
+        real signal table, so a typo like ``"SIGTRM"`` fails loudly here rather
+        than silently sending the wrong signal (or none).
+        """
+        try:
+            return signal.Signals[sig] if isinstance(sig, str) else signal.Signals(sig)
+        except (KeyError, ValueError):
+            raise ValueError("unknown stop signal %r" % (sig,))
 
     def reap_processes(self) -> list:
         """Reap any companions that have exited and record their exit info.

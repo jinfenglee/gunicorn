@@ -3,6 +3,7 @@
 # See the NOTICE for more information.
 
 import os
+import signal
 from unittest import mock
 
 import pytest
@@ -166,6 +167,55 @@ def test_start_process_unknown():
     mgr = make_manager("rq")
     ok, _ = mgr.start_process("nope")
     assert not ok
+
+
+def test_stop_process_running_signals_and_stopping():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.RUNNING
+    proc.pid = 80
+    proc.config.stop_timeout = 60
+    with mock.patch("os.kill") as kill:
+        ok, _ = mgr.stop_process("rq", now=200.0)
+    kill.assert_called_once_with(80, signal.SIGTERM)
+    assert ok and proc.state == State.STOPPING
+    assert proc.manual_stop is True and proc.stop_deadline == 260.0
+
+
+def test_stop_process_backoff_to_stopped():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.BACKOFF
+    proc.next_retry_at = 999.0
+    with mock.patch("os.kill") as kill:
+        ok, _ = mgr.stop_process("rq")
+    kill.assert_not_called()
+    assert ok and proc.state == State.STOPPED
+    assert proc.next_retry_at is None and proc.manual_stop is True
+
+
+def test_stop_process_already_stopped():
+    mgr = make_manager("rq")
+    with mock.patch("os.kill") as kill:
+        ok, _ = mgr.stop_process("rq")
+    kill.assert_not_called()
+    assert ok and mgr.processes["rq"].manual_stop is True
+
+
+def test_stop_process_unknown():
+    mgr = make_manager("rq")
+    ok, _ = mgr.stop_process("nope")
+    assert not ok
+
+
+def test_signal_number_resolves_name():
+    assert CompanionManager._signal_number("SIGKILL") == signal.SIGKILL
+    assert CompanionManager._signal_number(9) == 9
+
+
+def test_signal_number_rejects_bad():
+    with pytest.raises(ValueError):
+        CompanionManager._signal_number("SIGTRM")
 
 
 def test_handle_exit_unexpected_backoff():
