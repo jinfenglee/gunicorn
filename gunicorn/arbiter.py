@@ -14,6 +14,9 @@ import socket
 from gunicorn.errors import HaltServer, AppImportError
 from gunicorn.pidfile import Pidfile
 from gunicorn import sock, systemd, util
+from gunicorn.companion.config import build_companion_configs
+from gunicorn.companion.control import ControlServer
+from gunicorn.companion.manager import CompanionManager
 
 from gunicorn import __version__, SERVER_SOFTWARE
 
@@ -63,6 +66,7 @@ class Arbiter:
         self.reexec_pid = 0
         self.master_pid = 0
         self.master_name = "Master"
+        self.companion_manager_pid = 0
 
         cwd = util.getcwd()
 
@@ -201,6 +205,7 @@ class Arbiter:
 
         try:
             self.manage_workers()
+            self.manage_companion_manager()
 
             while True:
                 self.maybe_promote_master()
@@ -210,6 +215,7 @@ class Arbiter:
                     self.sleep()
                     self.murder_workers()
                     self.manage_workers()
+                    self.manage_companion_manager()
                     continue
 
                 if sig not in self.SIG_NAMES:
@@ -519,6 +525,12 @@ class Arbiter:
                     break
                 if self.reexec_pid == wpid:
                     self.reexec_pid = 0
+                elif self.companion_manager_pid == wpid:
+                    # The manager itself exited; clear its pid so the main
+                    # loop respawns it. It owns its companions' lifecycles.
+                    self.companion_manager_pid = 0
+                    self.log.error(
+                        "Companion manager (pid:%s) exited", wpid)
                 else:
                     # A worker was terminated. If the termination reason was
                     # that it could not boot, we'll shut it down to avoid
@@ -644,6 +656,52 @@ class Arbiter:
         for _ in range(self.num_workers - len(self.WORKERS)):
             self.spawn_worker()
             time.sleep(0.1 * random.random())
+
+    def manage_companion_manager(self):
+        """Keep the companion manager alive, spawning it if it is not running.
+
+        Does nothing unless companions are configured. The manager is a single
+        child of the arbiter; per-companion supervision lives entirely inside
+        it, so the arbiter only ensures the one manager process exists.
+        """
+        if self.companion_manager_pid == 0 and self.cfg.companion_workers:
+            self.spawn_companion_manager()
+
+    def spawn_companion_manager(self):
+        """Fork the companion manager process.
+
+        The parent records the manager pid and returns. The child builds the
+        configs, runs the manager's supervision loop, and exits when the loop
+        returns. The manager forks the individual companions itself.
+        """
+        configs = build_companion_configs(self.cfg)
+        if not configs:
+            return
+        manager = CompanionManager(configs, self.log)
+        manager.config_loader = lambda: build_companion_configs(self.cfg)
+        if self.cfg.companion_control_socket:
+            manager.control = ControlServer(
+                manager.handle_command,
+                self.cfg.companion_control_socket,
+                mode=self.cfg.companion_control_socket_mode or 0o600,
+                log=self.log)
+
+        pid = os.fork()
+        if pid != 0:
+            self.companion_manager_pid = pid
+            self.log.info("Companion manager started (pid:%s)", pid)
+            return pid
+
+        # Process Child
+        try:
+            util._setproctitle("companion manager [%s]" % self.proc_name)
+            manager.run()
+            sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            self.log.exception("Exception in companion manager process")
+            sys.exit(-1)
 
     def kill_workers(self, sig):
         """\

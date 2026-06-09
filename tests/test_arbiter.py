@@ -147,6 +147,39 @@ def test_arbiter_reap_workers(mock_os_waitpid):
     arbiter.cfg.child_exit.assert_called_with(arbiter, mock_worker)
 
 
+def test_arbiter_manage_companion_manager_spawns_when_configured():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers", [{"name": "rq", "target": "pkg:run"}])
+    arbiter.spawn_companion_manager = mock.Mock()
+    arbiter.manage_companion_manager()
+    arbiter.spawn_companion_manager.assert_called_once_with()
+
+
+def test_arbiter_manage_companion_manager_noop_without_companions():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.spawn_companion_manager = mock.Mock()
+    arbiter.manage_companion_manager()
+    arbiter.spawn_companion_manager.assert_not_called()
+
+
+def test_arbiter_manage_companion_manager_noop_when_running():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers", [{"name": "rq", "target": "pkg:run"}])
+    arbiter.companion_manager_pid = 4242
+    arbiter.spawn_companion_manager = mock.Mock()
+    arbiter.manage_companion_manager()
+    arbiter.spawn_companion_manager.assert_not_called()
+
+
+@mock.patch('os.waitpid')
+def test_arbiter_reap_clears_companion_manager_pid(mock_os_waitpid):
+    mock_os_waitpid.side_effect = [(4242, 0), (0, 0)]
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.companion_manager_pid = 4242
+    arbiter.reap_workers()
+    assert arbiter.companion_manager_pid == 0
+
+
 class PreloadedAppWithEnvSettings(DummyApplication):
     """
     Simple application that makes use of the 'preload' feature to

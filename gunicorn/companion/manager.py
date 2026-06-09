@@ -7,15 +7,17 @@ from __future__ import annotations
 
 import importlib
 import os
+import select
 import signal
 import time
 from typing import TYPE_CHECKING, Callable, Iterable, Union
 
+from gunicorn import util
 from gunicorn.companion.control import CommandError
 from gunicorn.companion.process import CompanionProcess, State
 
 if TYPE_CHECKING:
-    from gunicorn.companion.process import CompanionConfig
+    from gunicorn.companion.config import CompanionConfig
 
 
 class CompanionManager:
@@ -34,6 +36,133 @@ class CompanionManager:
         # Set by the arbiter wiring: a no-arg callable that re-reads and
         # validates companion config, returning a fresh CompanionConfig list.
         self.config_loader = None
+        # Set by the arbiter wiring: the ControlServer, or None when no control
+        # socket is configured. Created inside the child by run().
+        self.control = None
+        self.stopping = False
+        self._wakeup_pipe = None
+
+    def run(self) -> None:
+        """Run the manager's supervision loop. This is the forked child body.
+
+        Installs signal handling, brings up the control socket, starts every
+        companion, then loops servicing the socket and the companions until a
+        SIGTERM or SIGINT asks it to stop, at which point it shuts the
+        companions down and returns. Each tick reaps exited companions,
+        retries any that are backing off, promotes those past ``startsecs``,
+        and kills any that overran their stop deadline.
+        """
+        self._install_signals()
+        if self.control is not None:
+            self.control.create()
+        for process in self.processes.values():
+            self.spawn_process(process)
+        self.log.info("companion manager running (pid %s)", self.pid)
+        try:
+            while not self.stopping:
+                self._tick()
+                self._wait()
+            self.stop_all()
+        finally:
+            if self.control is not None:
+                self.control.close()
+
+    def _tick(self, now: float = None) -> None:
+        """One supervision pass over every companion."""
+        now = now or time.time()
+        self.reap_processes()
+        self.retry_backoff(now)
+        self.promote_running(now)
+        self.enforce_deadlines(now)
+
+    def _wait(self, timeout: float = 1.0) -> None:
+        """Block until a signal or a control request arrives, or we time out.
+
+        The self-pipe carries signal wake-ups; the control listener carries
+        client connections. Either readable (or the timeout) ends the wait, so
+        the next loop pass reacts promptly without busy-spinning.
+        """
+        readers = [self._wakeup_pipe[0]]
+        if self.control is not None and self.control.listener is not None:
+            readers.append(self.control.listener)
+        try:
+            ready, _, _ = select.select(readers, [], [], timeout)
+        except (InterruptedError, OSError):
+            return
+        for reader in ready:
+            if reader is self._wakeup_pipe[0]:
+                self._drain_wakeup()
+            else:
+                self._accept_control()
+
+    def _accept_control(self) -> None:
+        """Accept one waiting control connection and answer its requests."""
+        try:
+            connection, _ = self.control.listener.accept()
+        except OSError:
+            return
+        self.control.serve_connection(connection)
+
+    def enforce_deadlines(self, now: float = None) -> None:
+        """SIGKILL companions that overran their stop deadline.
+
+        A graceful ``stop_signal`` may be ignored or take too long; once the
+        deadline set by stop/restart passes, the companion is force-killed so
+        it cannot wedge the manager. The reaper picks up the exit afterwards.
+        """
+        now = now or time.time()
+        for process in self.processes.values():
+            if process.state != State.STOPPING or process.stop_deadline is None:
+                continue
+            if now >= process.stop_deadline and process.pid is not None:
+                os.kill(process.pid, signal.SIGKILL)
+                process.kill_count += 1
+                process.stop_deadline = None
+                self.log.warning("companion %s killed after timeout (pid %s)",
+                                 process.name, process.pid)
+
+    def stop_all(self) -> None:
+        """Stop every companion and reap them as they exit.
+
+        Sends each one its stop signal, then keeps reaping and enforcing stop
+        deadlines until they are all gone, so the manager exits without leaving
+        orphaned companions behind.
+        """
+        for name in list(self.processes):
+            self.stop_process(name)
+        while any(process.pid is not None for process in self.processes.values()):
+            now = time.time()
+            self.enforce_deadlines(now)
+            self.reap_processes()
+            self._wait(timeout=0.2)
+
+    def _install_signals(self) -> None:
+        """Set up the self-pipe and signal handlers for the supervision loop."""
+        self._wakeup_pipe = os.pipe()
+        for fd in self._wakeup_pipe:
+            util.set_non_blocking(fd)
+            util.close_on_exec(fd)
+        signal.signal(signal.SIGCHLD, self._wakeup)
+        signal.signal(signal.SIGTERM, self._signal_stop)
+        signal.signal(signal.SIGINT, self._signal_stop)
+
+    def _signal_stop(self, signum, frame) -> None:
+        self.stopping = True
+        self._wakeup()
+
+    def _wakeup(self, signum=None, frame=None) -> None:
+        """Wake the loop out of ``select`` by writing to the self-pipe."""
+        try:
+            os.write(self._wakeup_pipe[1], b".")
+        except OSError:
+            pass
+
+    def _drain_wakeup(self) -> None:
+        try:
+            while os.read(self._wakeup_pipe[0], 4096):
+                pass
+        except OSError:
+            pass
 
     def handle_command(self, command: dict) -> dict:
         """Route a decoded control command to its action.

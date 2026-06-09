@@ -10,7 +10,8 @@ import pytest
 
 from gunicorn.companion.control import CommandError
 from gunicorn.companion.manager import CompanionManager
-from gunicorn.companion.process import CompanionConfig, State
+from gunicorn.companion.config import CompanionConfig
+from gunicorn.companion.process import State
 
 
 def make_manager(*names):
