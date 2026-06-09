@@ -666,10 +666,10 @@ No per-companion logic in Arbiter.
 
 - [x] Add companion config settings in `gunicorn/config.py`.
 - [x] Add config validation for `companion_workers`.
-- [ ] Add `CompanionConfig` and config hash generation.
-- [ ] Add public process states.
-- [ ] Add `CompanionProcess` runtime state.
-- [ ] Add status description helpers.
+- [x] Add `CompanionConfig` and config hash generation.
+- [x] Add public process states.
+- [x] Add `CompanionProcess` runtime state.
+- [x] Add status description helpers.
 - [ ] Add `CompanionManager` skeleton.
 - [ ] Spawn one companion process from the manager.
 - [ ] Apply `cwd` and `env` before target.
