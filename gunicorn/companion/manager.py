@@ -31,6 +31,9 @@ class CompanionManager:
         self.log = log
         self.pid = os.getpid()
         self.processes = {c.name: CompanionProcess(c) for c in configs}
+        # Set by the arbiter wiring: a no-arg callable that re-reads and
+        # validates companion config, returning a fresh CompanionConfig list.
+        self.config_loader = None
 
     def handle_command(self, obj: dict) -> dict:
         """Route a decoded control command to its action.
@@ -44,6 +47,15 @@ class CompanionManager:
         cmd = obj["cmd"]
         if cmd == "status":
             return {"ok": True, "companions": self.status()}
+        if cmd == "reread":
+            if self.config_loader is None:
+                raise CommandError("reread not configured")
+            try:
+                new_configs = self.config_loader()
+            except Exception as e:
+                return {"ok": False, "error": "invalid config: %s" % e,
+                        "kept_old_config": True}
+            return self.reread_config(new_configs)
 
         # Every remaining command acts on one named companion.
         name = obj.get("name")
@@ -63,6 +75,62 @@ class CompanionManager:
         """Status entry for every companion, for the ``status`` command."""
         now = now or time.time()
         return [proc.status_dict(now) for proc in self.processes.values()]
+
+    def reread_config(self, new_configs) -> dict:
+        """Transactionally apply a fresh set of companion configs.
+
+        Each companion is compared with the running set by ``config_hash``:
+        a new name is added and started, a missing name is stopped and removed,
+        a changed hash stores the new config and restarts (unless the companion
+        was manually stopped, which keeps it STOPPED with the new config ready
+        for its next start), and an unchanged hash is left alone. Validation
+        runs first, so a bad config touches nothing and the old one stays live.
+        """
+        try:
+            new_by_name = self._index_configs(new_configs)
+        except CommandError as e:
+            return {"ok": False, "error": str(e), "kept_old_config": True}
+
+        added, removed, restarted, unchanged = [], [], [], []
+        old_names = set(self.processes)
+        new_names = set(new_by_name)
+
+        for name in old_names - new_names:
+            self.stop_process(name)
+            del self.processes[name]
+            removed.append(name)
+
+        for name in new_names - old_names:
+            proc = CompanionProcess(new_by_name[name])
+            self.processes[name] = proc
+            self.spawn_process(proc)
+            added.append(name)
+
+        for name in new_names & old_names:
+            proc = self.processes[name]
+            if proc.config.config_hash == new_by_name[name].config_hash:
+                unchanged.append(name)
+                continue
+            proc.config = new_by_name[name]
+            if proc.manual_stop:
+                unchanged.append(name)
+            else:
+                self.restart_process(name)
+                restarted.append(name)
+
+        return {"ok": True, "added": added, "removed": removed,
+                "restarted": restarted, "unchanged": unchanged}
+
+    @staticmethod
+    def _index_configs(configs) -> dict:
+        """Index configs by name, rejecting duplicates."""
+        by_name = {}
+        for config in configs:
+            if config.name in by_name:
+                raise CommandError(
+                    "invalid config: duplicate companion name %s" % config.name)
+            by_name[config.name] = config
+        return by_name
 
     def spawn_process(self, proc: CompanionProcess) -> int:
         """Fork one companion.

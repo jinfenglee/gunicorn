@@ -172,6 +172,90 @@ def test_handle_command_unknown():
         mgr.handle_command({"cmd": "reread"})
 
 
+def cfg(name, **kw):
+    return CompanionConfig(name=name, target=lambda: None, **kw)
+
+
+def test_reread_adds_new():
+    mgr = make_manager("rq")
+    new = [cfg("rq"), cfg("scheduler")]
+    with mock.patch("os.fork", return_value=10):
+        result = mgr.reread_config(new)
+    assert result["added"] == ["scheduler"]
+    assert "scheduler" in mgr.processes
+    assert mgr.processes["scheduler"].state == State.STARTING
+
+
+def test_reread_removes_missing():
+    mgr = make_manager("rq", "scheduler")
+    mgr.processes["scheduler"].state = State.RUNNING
+    mgr.processes["scheduler"].pid = 11
+    with mock.patch("os.kill"):
+        result = mgr.reread_config([cfg("rq")])
+    assert result["removed"] == ["scheduler"]
+    assert "scheduler" not in mgr.processes
+
+
+def test_reread_restarts_changed():
+    mgr = make_manager("rq")
+    mgr.processes["rq"].state = State.RUNNING
+    mgr.processes["rq"].pid = 12
+    changed = cfg("rq", env={"X": "1"})  # different hash
+    with mock.patch("os.kill"):
+        result = mgr.reread_config([changed])
+    assert result["restarted"] == ["rq"]
+    assert mgr.processes["rq"].config is changed
+    assert mgr.processes["rq"].state == State.STOPPING
+
+
+def test_reread_changed_manual_stop_keeps_stopped():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.manual_stop = True
+    proc.state = State.STOPPED
+    changed = cfg("rq", env={"X": "1"})
+    result = mgr.reread_config([changed])
+    assert result["unchanged"] == ["rq"]
+    assert proc.config is changed and proc.state == State.STOPPED
+
+
+def test_reread_unchanged_noop():
+    mgr = make_manager("rq")
+    same = mgr.processes["rq"].config
+    result = mgr.reread_config([same])
+    assert result["unchanged"] == ["rq"]
+    assert result["restarted"] == []
+
+
+def test_reread_duplicate_name_keeps_old():
+    mgr = make_manager("rq")
+    result = mgr.reread_config([cfg("rq"), cfg("rq")])
+    assert result["ok"] is False and result["kept_old_config"] is True
+    assert "duplicate" in result["error"]
+
+
+def test_handle_command_reread_no_loader():
+    mgr = make_manager("rq")
+    with pytest.raises(CommandError):
+        mgr.handle_command({"cmd": "reread"})
+
+
+def test_handle_command_reread_runs_loader():
+    mgr = make_manager("rq")
+    mgr.config_loader = lambda: [mgr.processes["rq"].config]
+    resp = mgr.handle_command({"cmd": "reread"})
+    assert resp["ok"] is True and resp["unchanged"] == ["rq"]
+
+
+def test_handle_command_reread_bad_config():
+    mgr = make_manager("rq")
+    def boom():
+        raise ValueError("duplicate companion name rq")
+    mgr.config_loader = boom
+    resp = mgr.handle_command({"cmd": "reread"})
+    assert resp["ok"] is False and resp["kept_old_config"] is True
+
+
 def test_start_process_stopped_spawns():
     mgr = make_manager("rq")
     proc = mgr.processes["rq"]

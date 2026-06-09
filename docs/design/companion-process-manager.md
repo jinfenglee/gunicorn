@@ -687,7 +687,7 @@ No per-companion logic in Arbiter.
 - [x] Implement `start`.
 - [x] Implement `stop`.
 - [x] Implement `restart`.
-- [ ] Implement transactional `reread`.
+- [x] Implement transactional `reread`.
 - [ ] Add manager spawn/reap logic in Arbiter.
 - [ ] Add manager shutdown handling in Arbiter.
 - [ ] Wire Gunicorn reload to manager `reread` or restart.
