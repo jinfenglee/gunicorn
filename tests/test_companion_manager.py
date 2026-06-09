@@ -125,6 +125,56 @@ def test_reap_no_children():
         assert mgr.reap_processes() == []
 
 
+def test_handle_exit_unexpected_backoff():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.restart_delay = 5
+    mgr.handle_exit(proc, now=100.0)
+    assert proc.state == State.BACKOFF
+    assert proc.next_retry_at == 105.0
+
+
+def test_handle_exit_manual_stop_stays_stopped():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.manual_stop = True
+    mgr.handle_exit(proc, now=100.0)
+    assert proc.state == State.STOPPED
+    assert proc.next_retry_at is None
+
+
+def test_retry_backoff_respawns_when_due():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.BACKOFF
+    proc.next_retry_at = 100.0
+    with mock.patch("os.fork", return_value=555):
+        retried = mgr.retry_backoff(now=101.0)
+    assert retried == [proc]
+    assert proc.restart_count == 1
+    assert proc.state == State.STARTING
+    assert proc.pid == 555
+
+
+def test_retry_backoff_waits_until_due():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.BACKOFF
+    proc.next_retry_at = 100.0
+    assert mgr.retry_backoff(now=99.0) == []
+    assert proc.state == State.BACKOFF
+
+
+def test_reap_unexpected_exit_enters_backoff():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.pid = 4321
+    with mock.patch("os.waitpid", side_effect=[(4321, 1 << 8), (0, 0)]):
+        mgr.reap_processes()
+    assert proc.state == State.BACKOFF
+    assert proc.next_retry_at is not None
+
+
 def test_promote_running_after_startsecs():
     mgr = make_manager("rq")
     proc = mgr.processes["rq"]
