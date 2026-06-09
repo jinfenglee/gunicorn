@@ -40,6 +40,21 @@ def test_resolve_target_rejects_bad_string():
         CompanionManager._resolve_target("no_colon")
 
 
+def test_close_manager_fds_closes_control_and_pipe():
+    manager = make_manager("rq")
+    manager.control = mock.Mock()
+    manager._wakeup_pipe = (7, 8)
+    with mock.patch("os.close") as os_close:
+        manager._close_manager_fds()
+    manager.control.listener.close.assert_called_once_with()
+    assert os_close.call_count == 2
+
+
+def test_close_manager_fds_noop_when_unset():
+    manager = make_manager("rq")
+    manager._close_manager_fds()  # control and pipe are None: must not raise
+
+
 def test_apply_environment_sets_cwd_and_env():
     config = CompanionConfig(name="rq", target=lambda: None,
                              cwd="/tmp", env={"COMPANION_X": "1"})

@@ -282,6 +282,7 @@ class CompanionManager:
             return pid
 
         try:
+            self._close_manager_fds()
             self._apply_environment(process.config)
             self._redirect_output(process.config)
             target = self._resolve_target(process.config.target)
@@ -292,6 +293,23 @@ class CompanionManager:
             self.log.exception("companion %s crashed", process.name)
             os._exit(1)
         os._exit(0)
+
+    def _close_manager_fds(self) -> None:
+        """Close the manager's own fds in a freshly forked companion.
+
+        A companion inherits the manager's control socket and wakeup pipe but
+        must not keep them: an open listener would let a companion answer
+        control requests, and the pipe is the manager's private signal path.
+        Both are closed before the target runs.
+        """
+        if self.control is not None and self.control.listener is not None:
+            self.control.listener.close()
+        if self._wakeup_pipe is not None:
+            for fd in self._wakeup_pipe:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     def start_process(self, name: str):
         """Start a companion by name (the control ``start`` command).
