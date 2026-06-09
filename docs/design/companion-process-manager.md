@@ -697,7 +697,7 @@ No per-companion logic in Arbiter.
 - [x] Add lifecycle logs.
 - [x] Add tests for config validation.
 - [x] Add tests for state transitions.
-- [ ] Add tests for control commands.
+- [x] Add tests for control commands.
 - [ ] Add tests for transactional reread.
 - [ ] Add tests that HTTP worker behavior is unchanged.
 
