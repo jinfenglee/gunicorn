@@ -699,6 +699,7 @@ class Arbiter:
 
         # Process Child
         try:
+            self._close_gunicorn_fds()
             util._setproctitle("companion manager [%s]" % self.proc_name)
             manager.run()
             sys.exit(0)
@@ -707,6 +708,24 @@ class Arbiter:
         except Exception:
             self.log.exception("Exception in companion manager process")
             sys.exit(-1)
+
+    def _close_gunicorn_fds(self):
+        """Close fds the manager inherited from the arbiter but never uses.
+
+        The companion manager serves no HTTP traffic and does not run the
+        arbiter's signal loop, so it drops the listening sockets, the arbiter's
+        wakeup pipe, and the worker heartbeat files. Closing them keeps the
+        manager (and the companions it forks) from pinning the arbiter's fds.
+        """
+        for listener in self.LISTENERS:
+            listener.close()
+        for pipe_fd in self.PIPE:
+            try:
+                os.close(pipe_fd)
+            except OSError:
+                pass
+        for worker in self.WORKERS.values():
+            worker.tmp.close()
 
     def reload_companion_manager(self):
         """Restart the companion manager so it picks up the new configuration.

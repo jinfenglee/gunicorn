@@ -205,6 +205,20 @@ def test_stop_companion_manager_clears_pid_when_already_gone():
     assert arbiter.companion_manager_pid == 0
 
 
+def test_close_gunicorn_fds_in_manager_child():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    listener = mock.Mock()
+    worker = mock.Mock()
+    arbiter.LISTENERS = [listener]
+    arbiter.WORKERS = {1: worker}
+    arbiter.PIPE = [7, 8]
+    with mock.patch("os.close") as os_close:
+        arbiter._close_gunicorn_fds()
+    listener.close.assert_called_once_with()
+    worker.tmp.close.assert_called_once_with()
+    assert os_close.call_count == 2
+
+
 def test_reload_companion_manager_restarts_running():
     arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
     arbiter.cfg.set("companion_workers", [{"name": "rq", "target": "pkg:run"}])

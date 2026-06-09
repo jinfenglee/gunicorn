@@ -691,7 +691,7 @@ No per-companion logic in Arbiter.
 - [x] Add manager spawn/reap logic in Arbiter.
 - [x] Add manager shutdown handling in Arbiter.
 - [x] Wire Gunicorn reload to manager `reread` or restart.
-- [ ] Close Gunicorn-only fds in manager child.
+- [x] Close Gunicorn-only fds in manager child.
 - [ ] Close manager-only fds in companion child.
 - [ ] Add parent-death cleanup.
 - [ ] Add lifecycle logs.
