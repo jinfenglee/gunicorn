@@ -185,7 +185,6 @@ companion_manager_stop_timeout = None
 companion_manager_reload_timeout = None
 
 companion_control_socket_mode = 0o600
-companion_control_socket_group = None
 ```
 
 If manager timeouts are unset, compute them dynamically:
@@ -332,12 +331,8 @@ Default permissions:
 companion_control_socket_mode = 0o600
 ```
 
-Optional group access:
-
-```python
-companion_control_socket_mode = 0o660
-companion_control_socket_group = "frappe-ops"
-```
+Gunicorn runs as a non-root user, so the socket is owned by that user and no
+group ownership switching is supported.
 
 Protocol: newline-delimited JSON.
 
