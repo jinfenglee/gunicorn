@@ -693,7 +693,7 @@ No per-companion logic in Arbiter.
 - [x] Wire Gunicorn reload to manager `reread` or restart.
 - [x] Close Gunicorn-only fds in manager child.
 - [x] Close manager-only fds in companion child.
-- [ ] Add parent-death cleanup.
+- [x] Add parent-death cleanup.
 - [ ] Add lifecycle logs.
 - [ ] Add tests for config validation.
 - [ ] Add tests for state transitions.

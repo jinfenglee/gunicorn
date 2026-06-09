@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import ctypes
 import importlib
 import os
 import select
 import signal
+import sys
 import time
 from typing import TYPE_CHECKING, Callable, Iterable, Union
 
@@ -18,6 +20,26 @@ from gunicorn.companion.process import CompanionProcess, State
 
 if TYPE_CHECKING:
     from gunicorn.companion.config import CompanionConfig
+
+# prctl option number for "send me this signal when my parent dies".
+PR_SET_PDEATHSIG = 1
+
+
+def set_parent_death_signal(stop_signal) -> bool:
+    """Ask the kernel to send ``stop_signal`` when this process's parent dies.
+
+    Uses Linux ``prctl(PR_SET_PDEATHSIG)`` so an orphaned manager or companion
+    is signalled the moment its parent goes away, rather than lingering. Returns
+    True when armed and False on any non-Linux platform or error, so callers can
+    fall back to polling ``os.getppid()``.
+    """
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        return libc.prctl(PR_SET_PDEATHSIG, int(stop_signal), 0, 0, 0) == 0
+    except (OSError, AttributeError):
+        return False
 
 
 class CompanionManager:
@@ -41,6 +63,7 @@ class CompanionManager:
         self.control = None
         self.stopping = False
         self._wakeup_pipe = None
+        self.parent_pid = None
 
     def run(self) -> None:
         """Run the manager's supervision loop. This is the forked child body.
@@ -51,8 +74,14 @@ class CompanionManager:
         companions down and returns. Each tick reaps exited companions,
         retries any that are backing off, promotes those past ``startsecs``,
         and kills any that overran their stop deadline.
+
+        If the arbiter dies, the manager stops too: it arms a parent-death
+        signal on Linux and, as a portable fallback, watches ``getppid`` each
+        tick so it never keeps companions running under a dead arbiter.
         """
+        self.parent_pid = os.getppid()
         self._install_signals()
+        set_parent_death_signal(signal.SIGTERM)
         if self.control is not None:
             self.control.create()
         for process in self.processes.values():
@@ -60,12 +89,19 @@ class CompanionManager:
         self.log.info("companion manager running (pid %s)", self.pid)
         try:
             while not self.stopping:
+                if self._parent_gone():
+                    self.log.info("companion manager parent gone, stopping")
+                    break
                 self._tick()
                 self._wait()
             self.stop_all()
         finally:
             if self.control is not None:
                 self.control.close()
+
+    def _parent_gone(self) -> bool:
+        """True once the arbiter that forked the manager has exited."""
+        return os.getppid() != self.parent_pid
 
     def _tick(self, now: float = None) -> None:
         """One supervision pass over every companion."""
@@ -283,6 +319,10 @@ class CompanionManager:
 
         try:
             self._close_manager_fds()
+            set_parent_death_signal(signal.SIGTERM)
+            if os.getppid() != self.pid:
+                # Manager already died between fork and arming: do not run.
+                os._exit(0)
             self._apply_environment(process.config)
             self._redirect_output(process.config)
             target = self._resolve_target(process.config.target)

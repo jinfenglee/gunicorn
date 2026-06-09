@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from gunicorn.companion.control import CommandError
-from gunicorn.companion.manager import CompanionManager
+from gunicorn.companion.manager import CompanionManager, set_parent_death_signal
 from gunicorn.companion.config import CompanionConfig
 from gunicorn.companion.process import State
 
@@ -38,6 +38,29 @@ def test_resolve_target_import_string():
 def test_resolve_target_rejects_bad_string():
     with pytest.raises(ValueError):
         CompanionManager._resolve_target("no_colon")
+
+
+def test_set_parent_death_signal_noop_off_linux():
+    with mock.patch("sys.platform", "darwin"):
+        assert set_parent_death_signal(signal.SIGTERM) is False
+
+
+def test_set_parent_death_signal_arms_on_linux():
+    libc = mock.Mock()
+    libc.prctl.return_value = 0
+    with mock.patch("sys.platform", "linux"), \
+            mock.patch("ctypes.CDLL", return_value=libc):
+        assert set_parent_death_signal(signal.SIGTERM) is True
+    libc.prctl.assert_called_once()
+
+
+def test_parent_gone_detects_reparenting():
+    manager = make_manager("rq")
+    manager.parent_pid = 4242
+    with mock.patch("os.getppid", return_value=4242):
+        assert manager._parent_gone() is False
+    with mock.patch("os.getppid", return_value=1):
+        assert manager._parent_gone() is True
 
 
 def test_close_manager_fds_closes_control_and_pipe():
