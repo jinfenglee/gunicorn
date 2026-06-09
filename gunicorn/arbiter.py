@@ -396,13 +396,15 @@ class Arbiter:
         if not graceful:
             sig = signal.SIGQUIT
         limit = time.time() + self.cfg.graceful_timeout
-        # instruct the workers to exit
+        # instruct the workers and the companion manager to exit
         self.kill_workers(sig)
+        self.stop_companion_manager(sig)
         # wait until the graceful timeout
-        while self.WORKERS and time.time() < limit:
+        while (self.WORKERS or self.companion_manager_pid) and time.time() < limit:
             time.sleep(0.1)
 
         self.kill_workers(signal.SIGKILL)
+        self.stop_companion_manager(signal.SIGKILL)
 
     def reexec(self):
         """\
@@ -702,6 +704,23 @@ class Arbiter:
         except Exception:
             self.log.exception("Exception in companion manager process")
             sys.exit(-1)
+
+    def stop_companion_manager(self, sig):
+        """Signal the companion manager to exit, if it is running.
+
+        A graceful SIGTERM lets the manager stop its own companions before it
+        exits; SIGKILL forces it down. The reaper clears the pid once it dies,
+        so a manager that is already gone is a no-op here.
+        """
+        if self.companion_manager_pid == 0:
+            return
+        try:
+            os.kill(self.companion_manager_pid, sig)
+        except OSError as e:
+            if e.errno == errno.ESRCH:
+                self.companion_manager_pid = 0
+                return
+            raise
 
     def kill_workers(self, sig):
         """\

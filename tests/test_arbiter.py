@@ -2,7 +2,9 @@
 # This file is part of gunicorn released under the MIT license.
 # See the NOTICE for more information.
 
+import errno
 import os
+import signal
 from unittest import mock
 
 import gunicorn.app.base
@@ -178,6 +180,39 @@ def test_arbiter_reap_clears_companion_manager_pid(mock_os_waitpid):
     arbiter.companion_manager_pid = 4242
     arbiter.reap_workers()
     assert arbiter.companion_manager_pid == 0
+
+
+def test_stop_companion_manager_signals_running():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.companion_manager_pid = 4242
+    with mock.patch("os.kill") as kill:
+        arbiter.stop_companion_manager(signal.SIGTERM)
+    kill.assert_called_once_with(4242, signal.SIGTERM)
+
+
+def test_stop_companion_manager_noop_when_not_running():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    with mock.patch("os.kill") as kill:
+        arbiter.stop_companion_manager(signal.SIGTERM)
+    kill.assert_not_called()
+
+
+def test_stop_companion_manager_clears_pid_when_already_gone():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.companion_manager_pid = 4242
+    with mock.patch("os.kill", side_effect=OSError(errno.ESRCH, "no such process")):
+        arbiter.stop_companion_manager(signal.SIGTERM)
+    assert arbiter.companion_manager_pid == 0
+
+
+@mock.patch('gunicorn.sock.close_sockets')
+def test_arbiter_stop_signals_companion_manager(close_sockets):
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.stop_companion_manager = mock.Mock()
+    arbiter.stop()
+    signals = [call.args[0] for call in arbiter.stop_companion_manager.call_args_list]
+    assert signal.SIGTERM in signals
+    assert signal.SIGKILL in signals
 
 
 class PreloadedAppWithEnvSettings(DummyApplication):
