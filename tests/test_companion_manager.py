@@ -579,3 +579,51 @@ def test_spawn_parent_records_pid_and_starting():
     assert proc.state == State.STARTING
     assert proc.started_at is not None
     assert proc.manual_stop is False
+
+
+def test_lifecycle_running_crash_backoff_retry():
+    manager = make_manager("rq")
+    process = manager.processes["rq"]
+    assert process.state == State.STOPPED
+    with mock.patch("os.fork", return_value=100):
+        manager.spawn_process(process)
+    assert process.state == State.STARTING
+    manager.promote_running(now=process.started_at + process.config.startsecs)
+    assert process.state == State.RUNNING
+    manager.handle_exit(process, now=1000.0)
+    assert process.state == State.BACKOFF
+    assert process.next_retry_at == 1000.0 + process.restart_delay
+    with mock.patch("os.fork", return_value=101):
+        manager.retry_backoff(now=process.next_retry_at)
+    assert process.state == State.STARTING
+
+
+def test_lifecycle_stop_to_stopped():
+    manager = make_manager("rq")
+    process = manager.processes["rq"]
+    with mock.patch("os.fork", return_value=200):
+        manager.spawn_process(process)
+    manager.promote_running(now=process.started_at + process.config.startsecs)
+    with mock.patch("os.kill") as kill:
+        manager.stop_process("rq", now=500.0)
+    assert process.state == State.STOPPING
+    assert process.manual_stop is True
+    kill.assert_called_once()
+    manager.handle_exit(process, now=501.0)
+    assert process.state == State.STOPPED
+
+
+def test_lifecycle_restart_respawns_after_exit():
+    manager = make_manager("rq")
+    process = manager.processes["rq"]
+    with mock.patch("os.fork", return_value=300):
+        manager.spawn_process(process)
+    manager.promote_running(now=process.started_at + process.config.startsecs)
+    with mock.patch("os.kill"):
+        manager.restart_process("rq", now=600.0)
+    assert process.state == State.STOPPING
+    assert process.restart_pending is True
+    with mock.patch("os.fork", return_value=301):
+        manager.handle_exit(process, now=601.0)
+    assert process.state == State.STARTING
+    assert process.restart_pending is False
