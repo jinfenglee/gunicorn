@@ -672,7 +672,7 @@ No per-companion logic in Arbiter.
 - [x] Add status description helpers.
 - [x] Add `CompanionManager` skeleton.
 - [x] Spawn one companion process from the manager.
-- [ ] Apply `cwd` and `env` before target.
+- [x] Apply `cwd` and `env` before target.
 - [ ] Redirect `stdout` and `stderr`.
 - [ ] Reap exited companion processes.
 - [ ] Implement `STARTING -> RUNNING` using `startsecs`.

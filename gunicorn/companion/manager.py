@@ -3,11 +3,17 @@
 # See the NOTICE for more information.
 
 
+from __future__ import annotations
+
 import importlib
 import os
 import time
+from typing import TYPE_CHECKING, Callable, Iterable, Union
 
 from gunicorn.companion.process import CompanionProcess, State
+
+if TYPE_CHECKING:
+    from gunicorn.companion.process import CompanionConfig
 
 
 class CompanionManager:
@@ -19,12 +25,12 @@ class CompanionManager:
     socket, and the run loop arrive in later tasks.
     """
 
-    def __init__(self, configs, log):
+    def __init__(self, configs: Iterable[CompanionConfig], log):
         self.log = log
         self.pid = os.getpid()
         self.processes = {c.name: CompanionProcess(c) for c in configs}
 
-    def spawn_process(self, proc):
+    def spawn_process(self, proc: CompanionProcess) -> int:
         """Fork one companion.
 
         Parent records the pid and moves the companion to STARTING. Child
@@ -41,6 +47,7 @@ class CompanionManager:
             return pid
 
         try:
+            self._apply_environment(proc.config)
             target = self._resolve_target(proc.config.target)
             target()
         except SystemExit:
@@ -51,7 +58,20 @@ class CompanionManager:
         os._exit(0)
 
     @staticmethod
-    def _resolve_target(target):
+    def _apply_environment(config: CompanionConfig) -> None:
+        """Apply ``cwd`` and ``env`` in the child before running the target.
+
+        cwd is changed first so a relative path in env (or the target itself)
+        resolves against it. env is merged onto the inherited environment, not
+        replaced, so the companion keeps the manager's variables.
+        """
+        if config.cwd:
+            os.chdir(config.cwd)
+        if config.env:
+            os.environ.update(config.env)
+
+    @staticmethod
+    def _resolve_target(target: Union[Callable, str]) -> Callable:
         """Return the zero-arg callable for a companion target.
 
         Accepts an already-callable target or a ``"module:attr"`` import

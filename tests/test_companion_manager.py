@@ -36,6 +36,24 @@ def test_resolve_target_rejects_bad_string():
         CompanionManager._resolve_target("no_colon")
 
 
+def test_apply_environment_sets_cwd_and_env():
+    config = CompanionConfig(name="rq", target=lambda: None,
+                             cwd="/tmp", env={"COMPANION_X": "1"})
+    with mock.patch("os.chdir") as chdir, \
+            mock.patch.dict("os.environ", {}, clear=False):
+        CompanionManager._apply_environment(config)
+        chdir.assert_called_once_with("/tmp")
+        import os
+        assert os.environ["COMPANION_X"] == "1"
+
+
+def test_apply_environment_noop_without_cwd_env():
+    config = CompanionConfig(name="rq", target=lambda: None)
+    with mock.patch("os.chdir") as chdir:
+        CompanionManager._apply_environment(config)
+        chdir.assert_not_called()
+
+
 def test_spawn_parent_records_pid_and_starting():
     mgr = make_manager("rq")
     proc = mgr.processes["rq"]
