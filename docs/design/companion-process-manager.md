@@ -699,7 +699,7 @@ No per-companion logic in Arbiter.
 - [x] Add tests for state transitions.
 - [x] Add tests for control commands.
 - [x] Add tests for transactional reread.
-- [ ] Add tests that HTTP worker behavior is unchanged.
+- [x] Add tests that HTTP worker behavior is unchanged.
 
 ## 21. Test Plan
 

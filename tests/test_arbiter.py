@@ -205,6 +205,37 @@ def test_stop_companion_manager_clears_pid_when_already_gone():
     assert arbiter.companion_manager_pid == 0
 
 
+@mock.patch('os.waitpid')
+def test_worker_reap_unaffected_by_companion_manager(mock_os_waitpid):
+    # A worker exit is still reaped normally while a companion manager runs;
+    # the companion reap branch must not swallow worker exits.
+    mock_os_waitpid.side_effect = [(42, 0), (0, 0)]
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.settings['child_exit'] = mock.Mock()
+    arbiter.companion_manager_pid = 9999
+    mock_worker = mock.Mock()
+    arbiter.WORKERS = {42: mock_worker}
+    arbiter.reap_workers()
+    mock_worker.tmp.close.assert_called_with()
+    arbiter.cfg.child_exit.assert_called_with(arbiter, mock_worker)
+    assert arbiter.companion_manager_pid == 9999
+
+
+@mock.patch('os.fork', return_value=77)
+def test_spawn_worker_unaffected_by_companions(mock_os_fork):
+    # With companions configured, an HTTP worker is still spawned and recorded
+    # exactly as before; companion config does not touch the worker path.
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers", [{"name": "rq", "target": "pkg:run"}])
+    arbiter.pid = 1234
+    arbiter.WORKERS = {}  # instance dict, do not mutate the shared class attr
+    mock_worker = mock.Mock()
+    arbiter.worker_class = mock.Mock(return_value=mock_worker)
+    pid = arbiter.spawn_worker()
+    assert pid == 77
+    assert arbiter.WORKERS[77] is mock_worker
+
+
 def test_close_gunicorn_fds_in_manager_child():
     arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
     listener = mock.Mock()
