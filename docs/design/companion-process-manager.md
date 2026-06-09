@@ -695,7 +695,7 @@ No per-companion logic in Arbiter.
 - [x] Close manager-only fds in companion child.
 - [x] Add parent-death cleanup.
 - [x] Add lifecycle logs.
-- [ ] Add tests for config validation.
+- [x] Add tests for config validation.
 - [ ] Add tests for state transitions.
 - [ ] Add tests for control commands.
 - [ ] Add tests for transactional reread.
