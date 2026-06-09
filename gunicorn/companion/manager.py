@@ -98,6 +98,7 @@ class CompanionManager:
         finally:
             if self.control is not None:
                 self.control.close()
+            self.log.info("companion manager stopped (pid %s)", self.pid)
 
     def _parent_gone(self) -> bool:
         """True once the arbiter that forked the manager has exited."""
@@ -164,6 +165,7 @@ class CompanionManager:
         deadlines until they are all gone, so the manager exits without leaving
         orphaned companions behind.
         """
+        self.log.info("stopping all companions")
         for name in list(self.processes):
             self.stop_process(name)
         while any(process.pid is not None for process in self.processes.values()):
@@ -171,6 +173,7 @@ class CompanionManager:
             self.enforce_deadlines(now)
             self.reap_processes()
             self._wait(timeout=0.2)
+        self.log.info("all companions stopped")
 
     def _install_signals(self) -> None:
         """Set up the self-pipe and signal handlers for the supervision loop."""
@@ -283,6 +286,9 @@ class CompanionManager:
                 self.restart_process(name)
                 restarted.append(name)
 
+        self.log.info(
+            "companion reread applied: added %s, removed %s, restarted %s, unchanged %s",
+            added, removed, restarted, unchanged)
         return {"ok": True, "added": added, "removed": removed,
                 "restarted": restarted, "unchanged": unchanged}
 
@@ -474,9 +480,19 @@ class CompanionManager:
             process = self._process_by_pid(pid)
             if process is not None:
                 self._record_exit(process, status)
+                self._log_exit(process)
                 self.handle_exit(process)
                 reaped.append(process)
         return reaped
+
+    def _log_exit(self, process: CompanionProcess) -> None:
+        """Log how a reaped companion exited, before its fate is decided."""
+        if process.last_exit_signal is not None:
+            self.log.info("companion %s exited on signal %s",
+                          process.name, process.last_exit_signal)
+        else:
+            self.log.info("companion %s exited with status %s",
+                          process.name, process.last_exit_code)
 
     def handle_exit(self, process: CompanionProcess, now: float = None) -> None:
         """Decide a companion's fate after it exits: restart, stop, or back off.
@@ -492,15 +508,17 @@ class CompanionManager:
         if process.restart_pending:
             process.restart_pending = False
             process.restart_count += 1
+            self.log.info("companion %s restarting", process.name)
             self.spawn_process(process)
             return
         if process.manual_stop:
             process.state = State.STOPPED
             process.next_retry_at = None
+            self.log.info("companion %s stopped", process.name)
             return
         process.state = State.BACKOFF
         process.next_retry_at = now + process.restart_delay
-        self.log.info("companion %s exited, retrying in %ss",
+        self.log.info("companion %s backing off, retrying in %ss",
                       process.name, process.restart_delay)
 
     def retry_backoff(self, now: float = None) -> list:

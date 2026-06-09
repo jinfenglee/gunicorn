@@ -694,7 +694,7 @@ No per-companion logic in Arbiter.
 - [x] Close Gunicorn-only fds in manager child.
 - [x] Close manager-only fds in companion child.
 - [x] Add parent-death cleanup.
-- [ ] Add lifecycle logs.
+- [x] Add lifecycle logs.
 - [ ] Add tests for config validation.
 - [ ] Add tests for state transitions.
 - [ ] Add tests for control commands.

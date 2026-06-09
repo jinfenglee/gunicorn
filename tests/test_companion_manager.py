@@ -40,6 +40,18 @@ def test_resolve_target_rejects_bad_string():
         CompanionManager._resolve_target("no_colon")
 
 
+def test_log_exit_reports_signal_or_status():
+    manager = make_manager("rq")
+    process = manager.processes["rq"]
+    process.last_exit_signal, process.last_exit_code = 9, None
+    manager._log_exit(process)
+    process.last_exit_signal, process.last_exit_code = None, 1
+    manager._log_exit(process)
+    messages = [call.args[0] for call in manager.log.info.call_args_list]
+    assert any("signal" in message for message in messages)
+    assert any("status" in message for message in messages)
+
+
 def test_set_parent_death_signal_noop_off_linux():
     with mock.patch("sys.platform", "darwin"):
         assert set_parent_death_signal(signal.SIGTERM) is False
