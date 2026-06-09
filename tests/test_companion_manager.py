@@ -2,6 +2,7 @@
 # This file is part of gunicorn released under the MIT license.
 # See the NOTICE for more information.
 
+import os
 from unittest import mock
 
 import pytest
@@ -52,6 +53,46 @@ def test_apply_environment_noop_without_cwd_env():
     with mock.patch("os.chdir") as chdir:
         CompanionManager._apply_environment(config)
         chdir.assert_not_called()
+
+
+def test_open_output_inherit_returns_none():
+    assert CompanionManager._open_output(None) is None
+    assert CompanionManager._open_output("inherit") is None
+
+
+def test_open_output_path_opens_append():
+    with mock.patch("os.open", return_value=9) as op:
+        fd = CompanionManager._open_output("/var/log/rq.log")
+    assert fd == 9
+    flags = op.call_args.args[1]
+    assert flags & os.O_APPEND and flags & os.O_CREAT
+
+
+def test_redirect_output_files():
+    config = CompanionConfig(name="rq", target=lambda: None,
+                             stdout="/o.log", stderr="/e.log")
+    with mock.patch("os.open", side_effect=[10, 11]), \
+            mock.patch("os.dup2") as dup2:
+        CompanionManager._redirect_output(config)
+    dup2.assert_any_call(10, 1)
+    dup2.assert_any_call(11, 2)
+
+
+def test_redirect_output_stderr_to_stdout():
+    config = CompanionConfig(name="rq", target=lambda: None,
+                             stdout="/o.log", stderr="stdout")
+    with mock.patch("os.open", return_value=10), \
+            mock.patch("os.dup2") as dup2:
+        CompanionManager._redirect_output(config)
+    dup2.assert_any_call(10, 1)
+    dup2.assert_any_call(1, 2)
+
+
+def test_redirect_output_inherit_noop():
+    config = CompanionConfig(name="rq", target=lambda: None)
+    with mock.patch("os.dup2") as dup2:
+        CompanionManager._redirect_output(config)
+    dup2.assert_not_called()
 
 
 def test_spawn_parent_records_pid_and_starting():

@@ -48,6 +48,7 @@ class CompanionManager:
 
         try:
             self._apply_environment(proc.config)
+            self._redirect_output(proc.config)
             target = self._resolve_target(proc.config.target)
             target()
         except SystemExit:
@@ -69,6 +70,33 @@ class CompanionManager:
             os.chdir(config.cwd)
         if config.env:
             os.environ.update(config.env)
+
+    @staticmethod
+    def _redirect_output(config: CompanionConfig) -> None:
+        """Send the companion's stdout and stderr to its configured log files.
+
+        By default a companion just inherits the manager's stdout/stderr, so
+        leaving these unset (or ``"inherit"``) keeps that. Give a file path and
+        we append the output there instead. For stderr you can also pass
+        ``"stdout"`` to fold the two streams into one file.
+        """
+        out = CompanionManager._open_output(config.stdout)
+        if out is not None:
+            os.dup2(out, 1)
+        if config.stderr == "stdout":
+            os.dup2(1, 2)
+        else:
+            err = CompanionManager._open_output(config.stderr)
+            if err is not None:
+                os.dup2(err, 2)
+
+    @staticmethod
+    def _open_output(value):
+        """Open one log file for writing, or return None to leave the stream
+        as-is when the companion should keep inheriting it."""
+        if value in (None, "inherit"):
+            return None
+        return os.open(value, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
 
     @staticmethod
     def _resolve_target(target: Union[Callable, str]) -> Callable:
