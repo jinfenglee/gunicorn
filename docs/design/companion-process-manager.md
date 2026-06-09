@@ -681,8 +681,8 @@ No per-companion logic in Arbiter.
 - [x] Implement `stop_process`.
 - [x] Implement `restart_process`.
 - [x] Preserve and clear `manual_stop` correctly.
-- [ ] Add Unix control socket.
-- [ ] Implement JSON command protocol.
+- [x] Add Unix control socket.
+- [x] Implement JSON command protocol.
 - [ ] Implement `status`.
 - [ ] Implement `start`.
 - [ ] Implement `stop`.
