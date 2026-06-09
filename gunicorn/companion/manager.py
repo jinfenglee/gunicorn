@@ -107,6 +107,34 @@ class CompanionManager:
         self.log.info("companion %s stopping (pid %s)", name, proc.pid)
         return True, "%s stopping" % name
 
+    def restart_process(self, name: str, now: float = None):
+        """Restart a companion by name (the control ``restart`` command).
+
+        Always clears ``manual_stop`` so the companion comes back. A live
+        companion (RUNNING or STARTING) is asked to stop -- it goes STOPPING
+        with ``restart_pending`` set and a deadline based on ``reload_timeout``,
+        and the reaper respawns it as soon as the old child exits. BACKOFF and
+        STOPPED start again immediately. STOPPING is rejected so the caller
+        retries. This never rereads config. Returns ``(ok, message)``.
+        """
+        proc = self.processes.get(name)
+        if proc is None:
+            return False, "unknown companion %s" % name
+        if proc.state == State.STOPPING:
+            return False, "%s is stopping; retry" % name
+        proc.manual_stop = False
+        if proc.state in (State.RUNNING, State.STARTING):
+            now = now or time.time()
+            proc.restart_pending = True
+            os.kill(proc.pid, self._signal_number(proc.config.stop_signal))
+            proc.state = State.STOPPING
+            proc.stop_deadline = now + proc.config.reload_timeout
+            self.log.info("companion %s restarting (pid %s)", name, proc.pid)
+            return True, "%s restarting" % name
+        proc.next_retry_at = None
+        self.spawn_process(proc)
+        return True, "%s started" % name
+
     @staticmethod
     def _signal_number(sig) -> int:
         """Resolve a stop signal to its number, e.g. ``"SIGTERM"`` -> 15.
@@ -157,14 +185,21 @@ class CompanionManager:
         return reaped
 
     def handle_exit(self, proc: CompanionProcess, now: float = None) -> None:
-        """Decide a companion's fate after it exits: stay stopped or back off.
+        """Decide a companion's fate after it exits: restart, stop, or back off.
 
-        A companion that was stopped on purpose settles in STOPPED and stays
-        there. Any other exit is unexpected, so it enters BACKOFF and is
+        A pending restart wins: the old child was asked to stop only so a fresh
+        one could take its place, so it is respawned immediately. Otherwise a
+        companion that was stopped on purpose settles in STOPPED and stays
+        there, and any other exit is unexpected, so it enters BACKOFF and is
         scheduled to restart after a fixed ``restart_delay`` (no exponential
         backoff, no retry cap).
         """
         now = now or time.time()
+        if proc.restart_pending:
+            proc.restart_pending = False
+            proc.restart_count += 1
+            self.spawn_process(proc)
+            return
         if proc.manual_stop:
             proc.state = State.STOPPED
             proc.next_retry_at = None

@@ -679,7 +679,7 @@ No per-companion logic in Arbiter.
 - [x] Implement `BACKOFF` with fixed `companion_restart_delay`.
 - [x] Implement `start_process`.
 - [x] Implement `stop_process`.
-- [ ] Implement `restart_process`.
+- [x] Implement `restart_process`.
 - [ ] Preserve and clear `manual_stop` correctly.
 - [ ] Add Unix control socket.
 - [ ] Implement JSON command protocol.

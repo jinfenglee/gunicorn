@@ -218,6 +218,62 @@ def test_signal_number_rejects_bad():
         CompanionManager._signal_number("SIGTRM")
 
 
+def test_restart_process_running_stops_with_reload_timeout():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.RUNNING
+    proc.pid = 90
+    proc.config.reload_timeout = 30
+    proc.manual_stop = True
+    with mock.patch("os.kill") as kill:
+        ok, _ = mgr.restart_process("rq", now=300.0)
+    kill.assert_called_once_with(90, signal.SIGTERM)
+    assert ok and proc.state == State.STOPPING
+    assert proc.restart_pending is True and proc.stop_deadline == 330.0
+    assert proc.manual_stop is False
+
+
+def test_restart_pending_reap_respawns_immediately():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.STOPPING
+    proc.restart_pending = True
+    proc.pid = 91
+    with mock.patch("os.waitpid", side_effect=[(91, 0), (0, 0)]), \
+            mock.patch("os.fork", return_value=92):
+        mgr.reap_processes()
+    assert proc.state == State.STARTING
+    assert proc.pid == 92
+    assert proc.restart_pending is False
+    assert proc.restart_count == 1
+
+
+def test_restart_process_stopped_starts_now():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    with mock.patch("os.fork", return_value=93), mock.patch("os.kill") as kill:
+        ok, _ = mgr.restart_process("rq")
+    kill.assert_not_called()
+    assert ok and proc.state == State.STARTING
+
+
+def test_restart_process_backoff_starts_now():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.BACKOFF
+    proc.next_retry_at = 999.0
+    with mock.patch("os.fork", return_value=94):
+        ok, _ = mgr.restart_process("rq")
+    assert ok and proc.state == State.STARTING and proc.next_retry_at is None
+
+
+def test_restart_process_stopping_rejected():
+    mgr = make_manager("rq")
+    mgr.processes["rq"].state = State.STOPPING
+    ok, msg = mgr.restart_process("rq")
+    assert not ok and "stopping" in msg
+
+
 def test_handle_exit_unexpected_backoff():
     mgr = make_manager("rq")
     proc = mgr.processes["rq"]

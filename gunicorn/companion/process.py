@@ -120,6 +120,7 @@ class CompanionProcess:
         self.last_exit_signal = None
 
         self.manual_stop = False
+        self.restart_pending = False
 
     @property
     def name(self):
