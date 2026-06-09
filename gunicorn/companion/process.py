@@ -76,18 +76,24 @@ class CompanionProcess:
                 self.pid,
                 format_uptime(self.uptime(now) or 0),
             )
-        if self.state == State.BACKOFF and self.next_retry_at is not None:
+        if self.state == State.BACKOFF:
+            return self._backoff_detail(now)
+        if self.state == State.STOPPED:
+            return self._stopped_detail()
+        return ""
+
+    def _backoff_detail(self, now):
+        if self.next_retry_at is not None:
             seconds_left = max(0, int(self.next_retry_at - now))
             return "exited with %s, retrying in %ds" % (self._exit_status(), seconds_left)
-        if self.state == State.BACKOFF:
-            return "exited with %s" % self._exit_status()
-        if self.state == State.STOPPED and self.manual_stop:
+        return "exited with %s" % self._exit_status()
+
+    def _stopped_detail(self):
+        if self.manual_stop:
             return "stopped manually"
-        if self.state == State.STOPPED and self.exited_at is not None:
+        if self.exited_at is not None:
             return "exited with %s" % self._exit_status()
-        if self.state == State.STOPPED:
-            return "not started"
-        return ""
+        return "not started"
 
     def _exit_status(self):
         if self.last_exit_signal is not None:
