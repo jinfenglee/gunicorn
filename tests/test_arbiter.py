@@ -205,6 +205,28 @@ def test_stop_companion_manager_clears_pid_when_already_gone():
     assert arbiter.companion_manager_pid == 0
 
 
+def test_reload_companion_manager_restarts_running():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers", [{"name": "rq", "target": "pkg:run"}])
+    arbiter.companion_manager_pid = 4242
+    arbiter.stop_companion_manager = mock.Mock()
+    arbiter.spawn_companion_manager = mock.Mock()
+    arbiter.reload_companion_manager()
+    arbiter.stop_companion_manager.assert_called_once_with(signal.SIGTERM)
+    # pid still set (stop is mocked), so no respawn until the old one is reaped
+    arbiter.spawn_companion_manager.assert_not_called()
+
+
+def test_reload_companion_manager_starts_when_none_running():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers", [{"name": "rq", "target": "pkg:run"}])
+    arbiter.stop_companion_manager = mock.Mock()
+    arbiter.spawn_companion_manager = mock.Mock()
+    arbiter.reload_companion_manager()
+    arbiter.stop_companion_manager.assert_not_called()
+    arbiter.spawn_companion_manager.assert_called_once_with()
+
+
 @mock.patch('gunicorn.sock.close_sockets')
 def test_arbiter_stop_signals_companion_manager(close_sockets):
     arbiter = gunicorn.arbiter.Arbiter(DummyApplication())

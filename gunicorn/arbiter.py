@@ -495,6 +495,9 @@ class Arbiter:
         # manage workers
         self.manage_workers()
 
+        # reload companions with the new configuration
+        self.reload_companion_manager()
+
     def murder_workers(self):
         """\
         Kill unused/idle workers
@@ -704,6 +707,21 @@ class Arbiter:
         except Exception:
             self.log.exception("Exception in companion manager process")
             sys.exit(-1)
+
+    def reload_companion_manager(self):
+        """Restart the companion manager so it picks up the new configuration.
+
+        Gunicorn reload (SIGHUP) rebuilds cfg. A running manager is asked to
+        stop -- it drains its companions first -- and the SIGCHLD reaper then
+        clears its pid so manage_companion_manager respawns it from the fresh
+        cfg. If companions were added where none ran, a new manager starts
+        right away. Per-companion transactional reread stays available
+        separately through the control socket.
+        """
+        if self.companion_manager_pid != 0:
+            self.log.info("Reloading companion manager")
+            self.stop_companion_manager(signal.SIGTERM)
+        self.manage_companion_manager()
 
     def stop_companion_manager(self, sig):
         """Signal the companion manager to exit, if it is running.
