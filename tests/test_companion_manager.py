@@ -9,7 +9,11 @@ from unittest import mock
 import pytest
 
 from gunicorn.companion.control import CommandError
-from gunicorn.companion.manager import CompanionManager, set_parent_death_signal
+from gunicorn.companion.manager import (
+    CompanionManager,
+    reset_child_signals,
+    set_parent_death_signal,
+)
 from gunicorn.companion.config import CompanionConfig
 from gunicorn.companion.process import State
 
@@ -50,6 +54,16 @@ def test_log_exit_reports_signal_or_status():
     messages = [call.args[0] for call in manager.log.info.call_args_list]
     assert any("signal" in message for message in messages)
     assert any("status" in message for message in messages)
+
+
+def test_reset_child_signals_restores_defaults():
+    with mock.patch("signal.signal") as signal_signal:
+        reset_child_signals()
+    restored = {call.args[0]: call.args[1] for call in signal_signal.call_args_list}
+    # The stop signal must reach the default disposition, not the manager's
+    # inherited handler, so a forked companion actually terminates on SIGTERM.
+    assert restored[signal.SIGTERM] is signal.SIG_DFL
+    assert restored[signal.SIGINT] is signal.SIG_DFL
 
 
 def test_set_parent_death_signal_noop_off_linux():

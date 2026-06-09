@@ -25,6 +25,28 @@ if TYPE_CHECKING:
 PR_SET_PDEATHSIG = 1
 
 
+# Signals the arbiter and manager install handlers for; a forked companion
+# resets them to the default so its stop signal works and the target starts
+# from a clean slate, the same way a gunicorn worker does.
+INHERITED_SIGNALS = [
+    "SIGCHLD", "SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT",
+    "SIGUSR1", "SIGUSR2", "SIGWINCH", "SIGTTIN", "SIGTTOU",
+]
+
+
+def reset_child_signals() -> None:
+    """Restore default signal handling in a freshly forked companion.
+
+    The companion inherits the manager's (and arbiter's) handlers across the
+    fork. Without this, a stop signal like SIGTERM would hit the manager's
+    handler -- which just flips a flag -- instead of terminating the companion.
+    """
+    for name in INHERITED_SIGNALS:
+        number = getattr(signal, name, None)
+        if number is not None:
+            signal.signal(number, signal.SIG_DFL)
+
+
 def set_parent_death_signal(stop_signal) -> bool:
     """Ask the kernel to send ``stop_signal`` when this process's parent dies.
 
@@ -79,6 +101,10 @@ class CompanionManager:
         signal on Linux and, as a portable fallback, watches ``getppid`` each
         tick so it never keeps companions running under a dead arbiter.
         """
+        # __init__ ran in the arbiter, so refresh pid/parent now that this is
+        # the manager process: the companion parent-death guard compares its
+        # getppid() against self.pid.
+        self.pid = os.getpid()
         self.parent_pid = os.getppid()
         self._install_signals()
         set_parent_death_signal(signal.SIGTERM)
@@ -325,6 +351,7 @@ class CompanionManager:
 
         try:
             self._close_manager_fds()
+            reset_child_signals()
             set_parent_death_signal(signal.SIGTERM)
             if os.getppid() != self.pid:
                 # Manager already died between fork and arming: do not run.
