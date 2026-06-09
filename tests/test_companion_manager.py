@@ -285,6 +285,23 @@ def test_reread_duplicate_name_keeps_old():
     assert "duplicate" in result["error"]
 
 
+def test_reread_validation_failure_mutates_nothing():
+    manager = make_manager("rq")
+    original_config = manager.processes["rq"].config
+    original_names = set(manager.processes)
+    # This batch would change "rq" and add "scheduler", but the duplicate
+    # "scheduler" makes the whole reread invalid: nothing must be applied.
+    bad = [make_config("rq", env={"X": "1"}), make_config("scheduler"),
+           make_config("scheduler")]
+    with mock.patch("os.fork") as fork, mock.patch("os.kill") as kill:
+        result = manager.reread_config(bad)
+    assert result["ok"] is False and result["kept_old_config"] is True
+    assert set(manager.processes) == original_names
+    assert manager.processes["rq"].config is original_config
+    fork.assert_not_called()
+    kill.assert_not_called()
+
+
 def test_handle_command_reread_no_loader():
     manager = make_manager("rq")
     with pytest.raises(CommandError):
