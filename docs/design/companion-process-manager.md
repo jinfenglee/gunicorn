@@ -670,8 +670,8 @@ No per-companion logic in Arbiter.
 - [x] Add public process states.
 - [x] Add `CompanionProcess` runtime state.
 - [x] Add status description helpers.
-- [ ] Add `CompanionManager` skeleton.
-- [ ] Spawn one companion process from the manager.
+- [x] Add `CompanionManager` skeleton.
+- [x] Spawn one companion process from the manager.
 - [ ] Apply `cwd` and `env` before target.
 - [ ] Redirect `stdout` and `stderr`.
 - [ ] Reap exited companion processes.
