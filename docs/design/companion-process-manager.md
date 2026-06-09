@@ -664,8 +664,8 @@ No per-companion logic in Arbiter.
 
 ## 20. Implementation Tasks
 
-- [ ] Add companion config settings in `gunicorn/config.py`.
-- [ ] Add config validation for `companion_workers`.
+- [x] Add companion config settings in `gunicorn/config.py`.
+- [x] Add config validation for `companion_workers`.
 - [ ] Add `CompanionConfig` and config hash generation.
 - [ ] Add public process states.
 - [ ] Add `CompanionProcess` runtime state.
