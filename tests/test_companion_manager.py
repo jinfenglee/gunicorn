@@ -274,6 +274,40 @@ def test_restart_process_stopping_rejected():
     assert not ok and "stopping" in msg
 
 
+def test_manual_stop_preserved_through_exit():
+    # stop a running companion, then reap its child: it must settle in STOPPED
+    # with manual_stop still set so it is not auto-restarted.
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.state = State.RUNNING
+    proc.pid = 60
+    with mock.patch("os.kill"):
+        mgr.stop_process("rq", now=10.0)
+    with mock.patch("os.waitpid", side_effect=[(60, 0), (0, 0)]), \
+            mock.patch("os.fork") as fork:
+        mgr.reap_processes()
+    fork.assert_not_called()
+    assert proc.state == State.STOPPED and proc.manual_stop is True
+
+
+def test_start_clears_manual_stop():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.manual_stop = True
+    with mock.patch("os.fork", return_value=61):
+        mgr.start_process("rq")
+    assert proc.manual_stop is False
+
+
+def test_spawn_does_not_touch_manual_stop():
+    mgr = make_manager("rq")
+    proc = mgr.processes["rq"]
+    proc.manual_stop = True
+    with mock.patch("os.fork", return_value=62):
+        mgr.spawn_process(proc)
+    assert proc.manual_stop is True
+
+
 def test_handle_exit_unexpected_backoff():
     mgr = make_manager("rq")
     proc = mgr.processes["rq"]

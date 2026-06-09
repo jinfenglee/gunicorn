@@ -37,13 +37,17 @@ class CompanionManager:
         Parent records the pid and moves the companion to STARTING. Child
         resolves and runs the target, exiting the worker on any failure so a
         crashed companion never leaks back into the manager's control flow.
+
+        Spawning is policy-neutral: it does not touch ``manual_stop``. Clearing
+        that flag is the job of the commands that intentionally bring a
+        companion back (:meth:`start_process`, :meth:`restart_process`), and a
+        companion only ever reaches a respawn path with the flag already false.
         """
         pid = os.fork()
         if pid != 0:
             proc.pid = pid
             proc.state = State.STARTING
             proc.started_at = time.time()
-            proc.manual_stop = False
             self.log.info("companion %s started (pid %s)", proc.name, pid)
             return pid
 
