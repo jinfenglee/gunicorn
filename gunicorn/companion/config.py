@@ -119,7 +119,9 @@ def _load_companion_settings(cfg):
         return {}
     namespace = {}
     with open(path) as config_file:
-        exec(compile(config_file.read(), path, "exec"), namespace)
+        # The companion config file is trusted operator input, like the main
+        # Gunicorn config; running it is the point.
+        exec(compile(config_file.read(), path, "exec"), namespace)  # pylint: disable=exec-used
     return {name: value for name, value in namespace.items()
             if name.startswith("companion_")}
 
