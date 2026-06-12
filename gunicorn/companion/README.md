@@ -134,3 +134,13 @@ restarts the manager with the reloaded config.
 | `control.py` | Unix socket server and JSON framing                       |
 | `ctl.py`     | `gunicorn-companion` command-line client                  |
 
+## Limitations
+
+Hot reexec (`SIGUSR2` zero-downtime upgrade) is not supported with
+companions. During the overlap the old and new masters each run their own
+companion manager, so every companion runs twice. For singletons such as a
+scheduler this means duplicate work (e.g. double-fired jobs). Stop and
+restart the master instead of reexec'ing when companions are configured, or
+keep singleton companions out of the companion set. A graceful reload
+(`SIGHUP`) is fine: it restarts the single manager in place.
+
