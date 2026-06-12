@@ -9,6 +9,7 @@ from unittest import mock
 
 import gunicorn.app.base
 import gunicorn.arbiter
+from gunicorn.companion.config import build_companion_configs
 from gunicorn.config import ReusePort
 
 
@@ -270,6 +271,35 @@ def test_reload_companion_manager_starts_when_none_running():
     arbiter.reload_companion_manager()
     arbiter.stop_companion_manager.assert_not_called()
     arbiter.spawn_companion_manager.assert_called_once_with()
+
+
+def test_reload_companion_manager_noop_when_config_unchanged():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers", [{"name": "rq", "target": "pkg:run"}])
+    # The running manager was spawned with this exact config.
+    arbiter._companion_configs = build_companion_configs(arbiter.cfg)
+    arbiter.companion_manager_pid = 4242
+    arbiter.stop_companion_manager = mock.Mock()
+    arbiter.spawn_companion_manager = mock.Mock()
+    arbiter.reload_companion_manager()
+    # A web reload with unchanged companion specs leaves the manager alone.
+    arbiter.stop_companion_manager.assert_not_called()
+    arbiter.spawn_companion_manager.assert_not_called()
+
+
+def test_reload_companion_manager_restarts_when_field_changed():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers",
+                    [{"name": "rq", "target": "pkg:run", "startsecs": 1}])
+    arbiter._companion_configs = build_companion_configs(arbiter.cfg)
+    arbiter.companion_manager_pid = 4242
+    # Same name, changed field -> different config_hash -> reload.
+    arbiter.cfg.set("companion_workers",
+                    [{"name": "rq", "target": "pkg:run", "startsecs": 9}])
+    arbiter.stop_companion_manager = mock.Mock()
+    arbiter.spawn_companion_manager = mock.Mock()
+    arbiter.reload_companion_manager()
+    arbiter.stop_companion_manager.assert_called_once_with(signal.SIGTERM)
 
 
 @mock.patch('gunicorn.sock.close_sockets')

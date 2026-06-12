@@ -121,8 +121,17 @@ echo '{"cmd": "status"}' | socat - UNIX-CONNECT:/run/gunicorn/companion.sock
 Commands: `status`, `start <name>`, `stop <name>`, `restart <name>`, `reread`.
 
 `reread` is transactional: the new config is validated first, and on any error
-nothing changes and the old config keeps running. A `SIGHUP` to Gunicorn
-restarts the manager with the reloaded config.
+nothing changes and the old config keeps running.
+
+A `SIGHUP` to Gunicorn recycles the HTTP workers, then reloads the companion
+manager **only if the companion config changed**. With `--preload`, a reload
+does not re-import application code (the WSGI callable is loaded once and
+cached), so unchanged companions are already current and are left running --
+the common web reload never bounces them. When the companion specs do change,
+the manager is restarted with the new config. Note that, like the HTTP
+workers, companions pick up new application code only on a full restart, not on
+`SIGHUP`. Use `reread` for finer, per-companion changes without touching the
+others.
 
 ## Files
 

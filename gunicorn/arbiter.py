@@ -735,19 +735,46 @@ class Arbiter:
             worker.tmp.close()
 
     def reload_companion_manager(self):
-        """Restart the companion manager so it picks up the new configuration.
+        """Reconcile the companion manager with the reloaded configuration.
 
-        Gunicorn reload (SIGHUP) rebuilds cfg. A running manager is asked to
-        stop -- it drains its companions first -- and the SIGCHLD reaper then
-        clears its pid so manage_companion_manager respawns it from the fresh
-        cfg. If companions were added where none ran, a new manager starts
-        right away. Per-companion transactional reread stays available
-        separately through the control socket.
+        A web reload (SIGHUP) recycles HTTP workers and re-reads config, but
+        with ``--preload`` it does not reload application code -- the WSGI
+        callable is loaded once and cached -- so the running companions are
+        already current. Restarting them on every reload would bounce them for
+        nothing, so the manager is only reloaded when the companion config
+        actually changed.
+
+        When it did change, a running manager is asked to stop (it drains its
+        companions first); the SIGCHLD reaper clears its pid so the main loop
+        respawns it from the fresh cfg, and a manager started where none ran
+        comes up right away. An unchanged config leaves the manager and its
+        companions untouched. Per-companion transactional reread stays
+        available separately through the control socket.
         """
+        try:
+            new_configs = build_companion_configs(self.cfg)
+        except Exception:
+            self.log.exception(
+                "Could not read companion config on reload; "
+                "leaving companion manager unchanged")
+            return
+        if not self._companion_configs_changed(new_configs):
+            return
         if self.companion_manager_pid != 0:
-            self.log.info("Reloading companion manager")
+            self.log.info("Companion config changed, reloading companion manager")
             self.stop_companion_manager(signal.SIGTERM)
         self.manage_companion_manager()
+
+    def _companion_configs_changed(self, new_configs):
+        """True when the companion config differs from the running manager's.
+
+        Compares the sorted ``config_hash`` of every companion, so a changed
+        field, an added name, or a removed name all count, while a pure web
+        reload with the same companion specs does not.
+        """
+        old_hashes = sorted(c.config_hash for c in self._companion_configs)
+        new_hashes = sorted(c.config_hash for c in new_configs)
+        return old_hashes != new_hashes
 
     def stop_companion_manager(self, sig):
         """Signal the companion manager to exit, if it is running.
