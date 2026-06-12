@@ -419,6 +419,9 @@ class CompanionManager:
         if process is None:
             return False, "unknown companion %s" % name
         process.manual_stop = True
+        # A stop must win over an in-flight restart: clearing this keeps
+        # handle_exit from respawning a companion the user asked to stop.
+        process.restart_pending = False
         if process.state in (State.STOPPED, State.STOPPING):
             return True, "%s already %s" % (name, process.state.lower())
         if process.state == State.BACKOFF:

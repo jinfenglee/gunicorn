@@ -420,6 +420,23 @@ def test_stop_process_unknown():
     assert not ok
 
 
+def test_stop_during_restart_cancels_pending_restart():
+    manager = make_manager("rq")
+    proc = manager.processes["rq"]
+    proc.state = State.STOPPING
+    proc.pid = 70
+    proc.restart_pending = True
+    with mock.patch("os.kill") as kill:
+        ok, _ = manager.stop_process("rq")
+    kill.assert_not_called()
+    assert ok and proc.manual_stop is True and proc.restart_pending is False
+    # On exit the companion now settles STOPPED instead of being respawned.
+    with mock.patch.object(manager, "spawn_process") as spawn:
+        manager.handle_exit(proc)
+    spawn.assert_not_called()
+    assert proc.state == State.STOPPED
+
+
 def test_signal_number_resolves_name():
     assert CompanionManager._signal_number("SIGKILL") == signal.SIGKILL
     assert CompanionManager._signal_number(9) == 9
