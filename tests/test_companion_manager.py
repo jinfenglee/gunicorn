@@ -139,20 +139,26 @@ def test_redirect_output_files():
     config = CompanionConfig(name="rq", target=lambda: None,
                              stdout="/o.log", stderr="/e.log")
     with mock.patch("os.open", side_effect=[10, 11]), \
-            mock.patch("os.dup2") as dup2:
+            mock.patch("os.dup2") as dup2, \
+            mock.patch("os.close") as close:
         CompanionManager._redirect_output(config)
     dup2.assert_any_call(10, 1)
     dup2.assert_any_call(11, 2)
+    # The opened fds are closed after being duped onto 1/2, no leak.
+    close.assert_any_call(10)
+    close.assert_any_call(11)
 
 
 def test_redirect_output_stderr_to_stdout():
     config = CompanionConfig(name="rq", target=lambda: None,
                              stdout="/o.log", stderr="stdout")
     with mock.patch("os.open", return_value=10), \
-            mock.patch("os.dup2") as dup2:
+            mock.patch("os.dup2") as dup2, \
+            mock.patch("os.close") as close:
         CompanionManager._redirect_output(config)
     dup2.assert_any_call(10, 1)
     dup2.assert_any_call(1, 2)
+    close.assert_called_once_with(10)
 
 
 def test_redirect_output_inherit_noop():
@@ -435,6 +441,21 @@ def test_stop_during_restart_cancels_pending_restart():
         manager.handle_exit(proc)
     spawn.assert_not_called()
     assert proc.state == State.STOPPED
+
+
+def test_safe_kill_ignores_dead_process():
+    with mock.patch("os.kill", side_effect=ProcessLookupError):
+        CompanionManager._safe_kill(123, signal.SIGTERM)  # must not raise
+
+
+def test_stop_process_survives_dead_companion():
+    manager = make_manager("rq")
+    proc = manager.processes["rq"]
+    proc.state = State.RUNNING
+    proc.pid = 80
+    with mock.patch("os.kill", side_effect=ProcessLookupError):
+        ok, _ = manager.stop_process("rq", now=1.0)
+    assert ok and proc.state == State.STOPPING
 
 
 def test_signal_number_resolves_name():

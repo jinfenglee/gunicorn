@@ -178,7 +178,7 @@ class CompanionManager:
             if process.state != State.STOPPING or process.stop_deadline is None:
                 continue
             if now >= process.stop_deadline and process.pid is not None:
-                os.kill(process.pid, signal.SIGKILL)
+                self._safe_kill(process.pid, signal.SIGKILL)
                 process.kill_count += 1
                 process.stop_deadline = None
                 self.log.warning("companion %s killed after timeout (pid %s)",
@@ -429,7 +429,7 @@ class CompanionManager:
             process.state = State.STOPPED
             return True, "%s stopped" % name
         now = now or time.time()
-        os.kill(process.pid, self._signal_number(process.config.stop_signal))
+        self._safe_kill(process.pid, self._signal_number(process.config.stop_signal))
         process.state = State.STOPPING
         process.stop_deadline = now + process.config.stop_timeout
         self.log.info("companion %s stopping (pid %s)", name, process.pid)
@@ -454,7 +454,7 @@ class CompanionManager:
         if process.state in (State.RUNNING, State.STARTING):
             now = now or time.time()
             process.restart_pending = True
-            os.kill(process.pid, self._signal_number(process.config.stop_signal))
+            self._safe_kill(process.pid, self._signal_number(process.config.stop_signal))
             process.state = State.STOPPING
             process.stop_deadline = now + process.config.reload_timeout
             self.log.info("companion %s restarting (pid %s)", name, process.pid)
@@ -462,6 +462,19 @@ class CompanionManager:
         process.next_retry_at = None
         self.spawn_process(process)
         return True, "%s started" % name
+
+    @staticmethod
+    def _safe_kill(pid: int, sig) -> None:
+        """Send ``sig`` to ``pid``, ignoring an already-dead target.
+
+        A companion can exit between the manager deciding to signal it and the
+        kill itself (the exit is only reaped on the next tick). Without this the
+        resulting ``ProcessLookupError`` would escape and take the manager down.
+        """
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
 
     @staticmethod
     def _signal_number(stop_signal) -> int:
@@ -637,12 +650,14 @@ class CompanionManager:
         stdout_fd = CompanionManager._open_output(config.stdout)
         if stdout_fd is not None:
             os.dup2(stdout_fd, 1)
+            os.close(stdout_fd)
         if config.stderr == "stdout":
             os.dup2(1, 2)
         else:
             stderr_fd = CompanionManager._open_output(config.stderr)
             if stderr_fd is not None:
                 os.dup2(stderr_fd, 2)
+                os.close(stderr_fd)
 
     @staticmethod
     def _open_output(value):

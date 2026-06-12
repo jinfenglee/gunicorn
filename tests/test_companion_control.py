@@ -9,6 +9,7 @@ import pytest
 
 from gunicorn.companion.config import CompanionConfig
 from gunicorn.companion.control import (
+    MAX_LINE_BYTES,
     CommandError,
     ControlServer,
     decode_command,
@@ -143,3 +144,42 @@ def test_control_reread_without_loader_error_envelope():
     response = json.loads(server_for(manager).handle_line('{"cmd": "reread"}'))
     assert response["ok"] is False
     assert "reread" in response["error"]
+
+
+class FakeConnection:
+    """Minimal connection stand-in for serve_connection: yields preset chunks."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.sent = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def recv(self, _size):
+        return self._chunks.pop(0) if self._chunks else b""
+
+    def sendall(self, data):
+        self.sent.append(data)
+
+
+def test_serve_connection_drops_oversized_line():
+    log = mock.Mock()
+    server = ControlServer(dispatch=lambda command: {"ok": True},
+                           path="/tmp/x.sock", log=log)
+    # A flood with no newline: the connection is dropped, nothing dispatched.
+    connection = FakeConnection([b"x" * (MAX_LINE_BYTES + 1)])
+    server.serve_connection(connection)
+    assert connection.sent == []
+    log.warning.assert_called_once()
+
+
+def test_serve_connection_answers_complete_line():
+    manager = make_manager("rq")
+    connection = FakeConnection([b'{"cmd": "status"}\n'])
+    server_for(manager).serve_connection(connection)
+    assert len(connection.sent) == 1
+    assert json.loads(connection.sent[0])["ok"] is True

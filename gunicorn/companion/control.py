@@ -40,6 +40,11 @@ def encode_response(response):
     return (json.dumps(response) + "\n").encode("utf-8")
 
 
+# A control request is a single short JSON line. Cap the unframed buffer so a
+# client that never sends a newline cannot grow it without bound.
+MAX_LINE_BYTES = 1 << 20
+
+
 class ControlServer:
     """The manager's Unix-socket control endpoint.
 
@@ -108,7 +113,9 @@ class ControlServer:
 
         Reads until the client hangs up, buffering partial reads and answering
         each complete line as it arrives. A trailing fragment without a newline
-        is ignored.
+        is ignored. A single line that grows past ``MAX_LINE_BYTES`` without a
+        newline is treated as abuse: the connection is dropped so it cannot pin
+        unbounded memory.
         """
         buffer = b""
         with connection:
@@ -121,3 +128,9 @@ class ControlServer:
                     line, buffer = buffer.split(b"\n", 1)
                     if line.strip():
                         connection.sendall(self.handle_line(line))
+                if len(buffer) > MAX_LINE_BYTES:
+                    if self.log is not None:
+                        self.log.warning(
+                            "companion control line exceeded %d bytes; closing",
+                            MAX_LINE_BYTES)
+                    break
