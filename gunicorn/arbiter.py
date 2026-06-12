@@ -395,7 +395,9 @@ class Arbiter:
         sig = signal.SIGTERM
         if not graceful:
             sig = signal.SIGQUIT
-        limit = time.time() + self.cfg.graceful_timeout
+        # The manager may need longer than a worker to drain its companions.
+        limit = time.time() + max(
+            self.cfg.graceful_timeout, self.companion_manager_stop_timeout())
         # instruct the workers and the companion manager to exit
         self.kill_workers(sig)
         self.stop_companion_manager(sig)
@@ -675,9 +677,10 @@ class Arbiter:
     def spawn_companion_manager(self):
         """Fork the companion manager process.
 
-        The parent records the manager pid and returns. The child builds the
-        configs, runs the manager's supervision loop, and exits when the loop
-        returns. The manager forks the individual companions itself.
+        The configs are built in the parent before the fork; the parent then
+        records the manager pid and returns, while the child runs the manager's
+        supervision loop and exits when the loop returns. The manager forks the
+        individual companions itself.
         """
         configs = build_companion_configs(self.cfg)
         if not configs:
@@ -695,7 +698,7 @@ class Arbiter:
         if pid != 0:
             self.companion_manager_pid = pid
             self.log.info("Companion manager started (pid:%s)", pid)
-            return pid
+            return
 
         # Process Child
         try:
@@ -758,6 +761,19 @@ class Arbiter:
                 self.companion_manager_pid = 0
                 return
             raise
+
+    def companion_manager_stop_timeout(self):
+        """Seconds to wait for the companion manager during shutdown: the
+        explicit setting, else the slowest companion stop_timeout plus the
+        shutdown buffer, else 0 when no companions are configured.
+        """
+        if self.cfg.companion_manager_stop_timeout is not None:
+            return self.cfg.companion_manager_stop_timeout
+        configs = build_companion_configs(self.cfg)
+        if not configs:
+            return 0
+        slowest = max(config.stop_timeout for config in configs)
+        return slowest + self.cfg.companion_manager_shutdown_buffer
 
     def kill_workers(self, sig):
         """\

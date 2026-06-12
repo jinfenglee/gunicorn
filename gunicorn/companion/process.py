@@ -36,7 +36,7 @@ class CompanionProcess:
         self.config = config
         self.state = State.STOPPED
         self.pid = None
-        self.restart_delay = 5
+        self.restart_delay = config.restart_delay
 
         self.started_at = None
         self.exited_at = None

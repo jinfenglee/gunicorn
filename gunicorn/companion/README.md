@@ -53,9 +53,7 @@ STOPPED ──start──▶ STARTING ──(survives startsecs)──▶ RUNNIN
 
 ## Configuration
 
-Companions live in the normal Gunicorn config — a Python file you pass with
-`-c`. There is no separate companion config file or CLI flag; if you already run
-Gunicorn with a config, add the companion settings to it.
+Companions live in the normal Gunicorn config — a Python file you pass with `-c`. To reload companions independently of the web config, put them in a dedicated file and point `companion_config_file` (or `--companion-config`) at it; the manager then reads its companion settings from there instead.
 
 Save a `gunicorn.conf.py`:
 

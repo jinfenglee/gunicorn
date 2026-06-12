@@ -8,7 +8,7 @@ import json
 
 # Maps each optional companion field to the global setting build_companion_configs
 # reads when a spec omits it. ``name`` and ``target`` are required per spec and
-# have no global default, so they are filled directly instead of through here.
+# have no global default. ``restart_delay`` is global-only, so it is absent here.
 FIELD_DEFAULTS = {
     "cwd": "companion_cwd",
     "env": "companion_env",
@@ -41,6 +41,7 @@ class CompanionConfig:
         stdout=None,
         stderr=None,
         startsecs=1,
+        restart_delay=5,
     ):
         self.name = name
         self.target = target
@@ -52,6 +53,7 @@ class CompanionConfig:
         self.stdout = stdout
         self.stderr = stderr
         self.startsecs = startsecs
+        self.restart_delay = restart_delay
 
     def to_dict(self):
         return {
@@ -88,19 +90,47 @@ class CompanionConfig:
         return "<CompanionConfig %s>" % self.name
 
 
-def build_companion_configs(cfg):
-    """Build a CompanionConfig list from ``cfg.companion_workers``.
+ALLOWED_SPEC_KEYS = {"name", "target"} | set(FIELD_DEFAULTS)
 
-    A spec missing ``name`` or ``target`` is rejected, since the manager has
-    nothing to supervise without both.
+
+def _load_companion_settings(cfg):
+    """Return the ``companion_*`` settings from ``companion_config_file``, or
+    ``{}`` when no dedicated file is configured."""
+    path = getattr(cfg, "companion_config_file", None)
+    if not path:
+        return {}
+    namespace = {}
+    with open(path) as config_file:
+        exec(compile(config_file.read(), path, "exec"), namespace)
+    return {name: value for name, value in namespace.items()
+            if name.startswith("companion_")}
+
+
+def build_companion_configs(cfg):
+    """Build a CompanionConfig list from the companion settings.
+
+    Settings come from ``companion_config_file`` when set, otherwise ``cfg``. A
+    spec is rejected if it is missing ``name``/``target`` or carries an unknown
+    key.
     """
+    overrides = _load_companion_settings(cfg)
+
+    def setting(name):
+        return overrides.get(name, getattr(cfg, name))
+
     configs = []
-    for spec in cfg.companion_workers:
+    for spec in setting("companion_workers"):
         if "name" not in spec or "target" not in spec:
             raise ValueError(
                 "each companion worker needs 'name' and 'target': %s" % spec)
-        fields = {field: spec.get(field, getattr(cfg, setting))
-                  for field, setting in FIELD_DEFAULTS.items()}
-        configs.append(
-            CompanionConfig(name=spec["name"], target=spec["target"], **fields))
+        unknown = set(spec) - ALLOWED_SPEC_KEYS
+        if unknown:
+            raise ValueError(
+                "unknown companion worker key(s) %s in %s"
+                % (sorted(unknown), spec))
+        fields = {field: spec.get(field, setting(global_setting))
+                  for field, global_setting in FIELD_DEFAULTS.items()}
+        configs.append(CompanionConfig(
+            name=spec["name"], target=spec["target"],
+            restart_delay=setting("companion_restart_delay"), **fields))
     return configs

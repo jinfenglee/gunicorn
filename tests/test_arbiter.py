@@ -282,6 +282,27 @@ def test_arbiter_stop_signals_companion_manager(close_sockets):
     assert signal.SIGKILL in signals
 
 
+def test_companion_manager_stop_timeout_uses_explicit():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_manager_stop_timeout", 120)
+    assert arbiter.companion_manager_stop_timeout() == 120
+
+
+def test_companion_manager_stop_timeout_derives_from_slowest():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers", [
+        {"name": "rq", "target": "pkg:run", "stop_timeout": 300},
+        {"name": "scheduler", "target": "pkg:sched", "stop_timeout": 30},
+    ])
+    arbiter.cfg.set("companion_manager_shutdown_buffer", 10)
+    assert arbiter.companion_manager_stop_timeout() == 310
+
+
+def test_companion_manager_stop_timeout_zero_without_companions():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    assert arbiter.companion_manager_stop_timeout() == 0
+
+
 class PreloadedAppWithEnvSettings(DummyApplication):
     """
     Simple application that makes use of the 'preload' feature to
