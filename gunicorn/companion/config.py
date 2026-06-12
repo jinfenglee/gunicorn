@@ -4,6 +4,7 @@
 
 import hashlib
 import json
+import signal
 
 
 # Maps each optional companion field to the global setting build_companion_configs
@@ -93,6 +94,23 @@ class CompanionConfig:
 ALLOWED_SPEC_KEYS = {"name", "target"} | set(FIELD_DEFAULTS)
 
 
+def _validate_stop_signal(stop_signal, name):
+    """Reject a stop_signal that does not name a real signal.
+
+    Caught here at build time so a typo like ``"SIGTRM"`` fails loudly when
+    config is loaded or rereaded, rather than crashing the manager later when
+    it tries to send the signal.
+    """
+    try:
+        if isinstance(stop_signal, str):
+            signal.Signals[stop_signal]
+        else:
+            signal.Signals(stop_signal)
+    except (KeyError, ValueError):
+        raise ValueError(
+            "companion %s has unknown stop_signal %r" % (name, stop_signal))
+
+
 def _load_companion_settings(cfg):
     """Return the ``companion_*`` settings from ``companion_config_file``, or
     ``{}`` when no dedicated file is configured."""
@@ -130,6 +148,7 @@ def build_companion_configs(cfg):
                 % (sorted(unknown), spec))
         fields = {field: spec.get(field, setting(global_setting))
                   for field, global_setting in FIELD_DEFAULTS.items()}
+        _validate_stop_signal(fields["stop_signal"], spec["name"])
         configs.append(CompanionConfig(
             name=spec["name"], target=spec["target"],
             restart_delay=setting("companion_restart_delay"), **fields))

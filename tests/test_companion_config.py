@@ -50,6 +50,20 @@ def test_build_rejects_unknown_spec_key():
             make_config([{"name": "rq", "target": "pkg:run", "stop_sigal": "X"}]))
 
 
+def test_build_rejects_unknown_stop_signal():
+    with pytest.raises(ValueError):
+        build_companion_configs(
+            make_config([{"name": "rq", "target": "pkg:run",
+                          "stop_signal": "SIGTRM"}]))
+
+
+def test_build_rejects_unknown_global_stop_signal():
+    with pytest.raises(ValueError):
+        build_companion_configs(
+            make_config([{"name": "rq", "target": "pkg:run"}],
+                        companion_stop_signal="NOPE"))
+
+
 def test_build_reads_companion_config_file(tmp_path):
     config_file = tmp_path / "companion.conf.py"
     config_file.write_text(

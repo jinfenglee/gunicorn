@@ -73,6 +73,15 @@ def test_handle_line_dispatch_command_error():
     assert response["ok"] is False and response["error"] == "unknown command"
 
 
+def test_handle_line_unexpected_exception_caught():
+    def dispatch(command):
+        raise ValueError("unknown stop signal 'SIGTRM'")
+    server = ControlServer(dispatch=dispatch, path="/tmp/x.sock",
+                           log=mock.Mock())
+    response = json.loads(server.handle_line('{"cmd": "stop", "name": "rq"}'))
+    assert response["ok"] is False and "internal error" in response["error"]
+
+
 def test_create_unlinks_stale_and_chmods():
     server = ControlServer(dispatch=lambda command: {}, path="/tmp/x.sock",
                            mode=0o600)

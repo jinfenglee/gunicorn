@@ -87,14 +87,20 @@ class ControlServer:
     def handle_line(self, line):
         """Run one request line and return the encoded response bytes.
 
-        Both decoding and dispatch failures are caught and rendered as an
-        error response, so one bad request never breaks the connection or the
-        manager.
+        Decoding and dispatch failures are caught and rendered as an error
+        response, so one bad request never breaks the connection or the
+        manager. CommandError is the expected rejection; any other exception
+        from dispatch is an unexpected handler bug, caught here for the same
+        reason -- it must not escape and kill the manager's run loop.
         """
         try:
             response = self.dispatch(decode_command(line))
         except CommandError as error:
             response = {"ok": False, "error": str(error)}
+        except Exception as error:
+            if self.log is not None:
+                self.log.exception("companion control command failed")
+            response = {"ok": False, "error": "internal error: %s" % error}
         return encode_response(response)
 
     def serve_connection(self, connection):
