@@ -20,6 +20,192 @@ for reference on setting at the command line.
 
     .. versionadded:: 19.7
 
+Companion Processes
+-------------------
+
+.. _companion-config-file:
+
+``companion_config_file``
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Command line:** ``--companion-config``
+
+**Default:** ``None``
+
+Dedicated Python file the manager reads for companion specs.
+
+Lets companions reload independently of the main Gunicorn config.
+Example: ``companion_config_file = "/home/frappe/bench/companion.conf.py"``.
+If unset, specs are read from the main Gunicorn config.
+
+.. _companion-workers:
+
+``companion_workers``
+~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``[]``
+
+List of companion process specs, each a dict.
+
+A spec requires ``name`` and ``target``; other keys override defaults.
+Example: ``[{"name": "scheduler", "target": "app:run_scheduler"}]``.
+
+.. _companion-control-socket:
+
+``companion_control_socket``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Command line:** ``--companion-control-socket``
+
+**Default:** ``None``
+
+Unix socket the manager listens on for control commands.
+
+Clients send ``status``/``start``/``stop``/``restart``/``reread`` as JSON.
+Example: ``companion_control_socket = "/run/gunicorn/companion.sock"``.
+
+.. _companion-control-socket-mode:
+
+``companion_control_socket_mode``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``384``
+
+Octal file mode set on the control socket after it is created.
+
+Default ``0o600`` lets only the owner connect.
+Example: ``companion_control_socket_mode = 0o660``.
+
+.. _companion-stop-signal:
+
+``companion_stop_signal``
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``'SIGTERM'``
+
+Signal sent first when stopping a companion.
+
+The companion should catch it to drain work before exiting.
+Example: ``companion_stop_signal = "SIGINT"``.
+
+.. _companion-stop-timeout:
+
+``companion_stop_timeout``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``60``
+
+Seconds to wait after the stop signal before sending SIGKILL.
+
+Give slow-draining workers a larger value.
+Example: ``companion_stop_timeout = 300``.
+
+.. _companion-reload-timeout:
+
+``companion_reload_timeout``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``60``
+
+Seconds to wait for the old child to exit during restart/reread.
+
+Used instead of ``stop_timeout`` when replacing a companion.
+Example: ``companion_reload_timeout = 30``.
+
+.. _companion-stdout:
+
+``companion_stdout``
+~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``None``
+
+Where to send companion stdout: a file path or ``"inherit"``.
+
+Files are opened in append mode; ``None`` inherits the manager's stdout.
+Example: ``companion_stdout = "/var/log/frappe/rq.log"``.
+
+.. _companion-stderr:
+
+``companion_stderr``
+~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``None``
+
+Where to send companion stderr: a path, ``"stdout"``, or ``"inherit"``.
+
+Use ``"stdout"`` to merge stderr into the stdout target.
+Example: ``companion_stderr = "stdout"``.
+
+.. _companion-cwd:
+
+``companion_cwd``
+~~~~~~~~~~~~~~~~~
+
+**Default:** ``None``
+
+Directory the child changes into before running the target.
+
+Example: ``companion_cwd = "/home/frappe/frappe-bench"``.
+
+.. _companion-env:
+
+``companion_env``
+~~~~~~~~~~~~~~~~~
+
+**Default:** ``{}``
+
+Extra environment variables merged into the child environment.
+
+Example: ``companion_env = {"QUEUE": "default"}``.
+
+.. _companion-startsecs:
+
+``companion_startsecs``
+~~~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``1``
+
+Seconds a freshly forked companion must survive to reach RUNNING.
+
+Exiting earlier counts as a failed start and triggers BACKOFF.
+Example: ``companion_startsecs = 5``.
+
+.. _companion-restart-delay:
+
+``companion_restart_delay``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``5``
+
+Fixed seconds to wait before restarting a crashed companion.
+
+No exponential backoff; the same delay is used every time.
+Example: ``companion_restart_delay = 10``.
+
+.. _companion-manager-shutdown-buffer:
+
+``companion_manager_shutdown_buffer``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``10``
+
+Extra seconds added to the slowest companion timeout for the manager.
+
+Gives the manager headroom to stop all children before Gunicorn kills it.
+Example: ``companion_manager_shutdown_buffer = 15``.
+
+.. _companion-manager-stop-timeout:
+
+``companion_manager_stop_timeout``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Default:** ``None``
+
+Seconds Gunicorn waits for the manager to stop during shutdown.
+
+By default it uses the slowest companion ``stop_timeout`` plus a buffer.
+Example: ``companion_manager_stop_timeout = 120``.
+
 Config File
 -----------
 
@@ -1148,7 +1334,7 @@ change the worker process user.
 Switch worker process to run as this group.
 
 A valid group id (as an integer) or the name of a user that can be
-retrieved with a call to ``pwd.getgrnam(value)`` or ``None`` to not
+retrieved with a call to ``grp.getgrnam(value)`` or ``None`` to not
 change the worker processes group.
 
 .. _umask:
@@ -1702,6 +1888,56 @@ This setting only affects the Gthread worker type.
 The maximum number of simultaneous clients.
 
 This setting only affects the ``gthread``, ``eventlet`` and ``gevent`` worker types.
+
+.. _enable-adaptive-queueing:
+
+``enable_adaptive_queueing``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Command line:** ``--enable-adaptive-queueing``
+
+**Default:** ``False``
+
+Enable adaptive multi-queue routing in the ``gthread`` worker.
+
+Can also be enabled by setting the ``GUNICORN_ENABLE_ADAPTIVE_QUEUEING``
+environment variable to ``true``.
+
+When enabled, the worker splits its :ref:`threads` roughly evenly into
+two lanes — a *fast* lane and a *slow* lane — and routes each request
+to one of them by predicting, from previously observed timings of the
+same route (method + path), whether it will exceed
+:ref:`slow-request-threshold`. Slow-predicted requests go to the slow
+lane so they can never starve the fast lane, even under a flood of
+slow requests.
+
+Requires :ref:`threads` to be at least 2.
+
+This setting only affects the ``gthread`` worker type.
+
+.. versionadded:: 23.1.0
+
+.. _slow-request-threshold:
+
+``slow_request_threshold``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+**Command line:** ``--slow-request-threshold FLOAT``
+
+**Default:** ``5.0``
+
+Processing time (in seconds) above which a request route is treated as
+"slow" by the ``gthread`` worker when :ref:`enable-adaptive-queueing`
+is enabled.
+
+A route is learned as slow once it has been observed exceeding this
+threshold (either on completion or while still running); its timing
+decays back below the threshold if it becomes fast again.
+
+Only used by the ``gthread`` worker when :ref:`enable-adaptive-queueing`
+is enabled.
+
+.. versionadded:: 23.1.0
 
 .. _max-requests:
 
