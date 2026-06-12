@@ -101,12 +101,11 @@ def _validate_stop_signal(stop_signal, name):
     config is loaded or rereaded, rather than crashing the manager later when
     it tries to send the signal.
     """
-    try:
-        if isinstance(stop_signal, str):
-            signal.Signals[stop_signal]
-        else:
-            signal.Signals(stop_signal)
-    except (KeyError, ValueError):
+    if isinstance(stop_signal, str):
+        valid = stop_signal in signal.Signals.__members__
+    else:
+        valid = stop_signal in set(signal.Signals)
+    if not valid:
         raise ValueError(
             "companion %s has unknown stop_signal %r" % (name, stop_signal))
 
