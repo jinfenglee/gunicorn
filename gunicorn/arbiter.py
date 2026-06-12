@@ -67,6 +67,9 @@ class Arbiter:
         self.master_pid = 0
         self.master_name = "Master"
         self.companion_manager_pid = 0
+        # Configs of the currently running companion manager, cached at spawn so
+        # shutdown can size its wait without re-reading the config file.
+        self._companion_configs = []
 
         cwd = util.getcwd()
 
@@ -697,6 +700,7 @@ class Arbiter:
         pid = os.fork()
         if pid != 0:
             self.companion_manager_pid = pid
+            self._companion_configs = configs
             self.log.info("Companion manager started (pid:%s)", pid)
             return
 
@@ -769,7 +773,15 @@ class Arbiter:
         """
         if self.cfg.companion_manager_stop_timeout is not None:
             return self.cfg.companion_manager_stop_timeout
-        configs = build_companion_configs(self.cfg)
+        # Prefer the configs cached at spawn over re-reading the config file
+        # mid-shutdown, where a since-changed or removed file could raise.
+        configs = self._companion_configs
+        if not configs:
+            try:
+                configs = build_companion_configs(self.cfg)
+            except Exception:
+                self.log.exception("could not read companion config for shutdown")
+                return 0
         if not configs:
             return 0
         slowest = max(config.stop_timeout for config in configs)

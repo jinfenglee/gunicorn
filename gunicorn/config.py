@@ -2723,16 +2723,3 @@ class CompanionManagerStopTimeout(Setting):
         By default it uses the slowest companion ``stop_timeout`` plus a buffer.
         Example: ``companion_manager_stop_timeout = 120``.
         """
-
-
-class CompanionManagerReloadTimeout(Setting):
-    name = "companion_manager_reload_timeout"
-    section = "Companion Processes"
-    validator = validate_pos_int_or_none
-    default = None
-    desc = """\
-        Seconds Gunicorn waits for the manager during reload.
-
-        By default it uses the slowest companion ``reload_timeout`` plus a buffer.
-        Example: ``companion_manager_reload_timeout = 90``.
-        """

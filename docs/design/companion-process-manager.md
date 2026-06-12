@@ -182,7 +182,6 @@ companion_restart_delay = 5
 # seconds; used when manager timeout is computed dynamically
 companion_manager_shutdown_buffer = 10
 companion_manager_stop_timeout = None
-companion_manager_reload_timeout = None
 
 companion_control_socket_mode = 0o600
 ```
