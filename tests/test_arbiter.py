@@ -5,6 +5,7 @@
 import errno
 import os
 import signal
+import time
 from unittest import mock
 
 import gunicorn.app.base
@@ -181,6 +182,61 @@ def test_arbiter_reap_clears_companion_manager_pid(mock_os_waitpid):
     arbiter.companion_manager_pid = 4242
     arbiter.reap_workers()
     assert arbiter.companion_manager_pid == 0
+
+
+@mock.patch('os.waitpid')
+def test_arbiter_reap_unexpected_manager_exit_backs_off(mock_os_waitpid):
+    # An unexpected manager exit (no deliberate stop) is an error and arms the
+    # crash backoff so the main loop does not respawn it immediately.
+    mock_os_waitpid.side_effect = [(4242, 0), (0, 0)]
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.companion_manager_pid = 4242
+    arbiter.log = mock.Mock()
+    arbiter.reap_workers()
+    assert arbiter.companion_manager_pid == 0
+    assert arbiter._companion_manager_failures == 1
+    assert arbiter._companion_manager_respawn_at > 0
+    arbiter.log.error.assert_called_once()
+    arbiter.log.info.assert_not_called()
+
+
+@mock.patch('os.waitpid')
+def test_arbiter_reap_deliberate_manager_exit_is_info(mock_os_waitpid):
+    # A deliberate stop (stopping flag set) is an expected exit: logged as info
+    # with no backoff, so a reload respawns without delay.
+    mock_os_waitpid.side_effect = [(4242, 0), (0, 0)]
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.companion_manager_pid = 4242
+    arbiter._companion_manager_stopping = True
+    arbiter.log = mock.Mock()
+    arbiter.reap_workers()
+    assert arbiter.companion_manager_pid == 0
+    assert arbiter._companion_manager_stopping is False
+    assert arbiter._companion_manager_respawn_at == 0
+    arbiter.log.info.assert_called_once()
+    arbiter.log.error.assert_not_called()
+
+
+def test_arbiter_manage_companion_manager_waits_during_backoff():
+    # While inside the crash-backoff window the manager is not respawned.
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.cfg.set("companion_workers", [{"name": "rq", "target": "pkg:run"}])
+    arbiter._companion_manager_respawn_at = time.monotonic() + 60
+    arbiter.spawn_companion_manager = mock.Mock()
+    arbiter.manage_companion_manager()
+    arbiter.spawn_companion_manager.assert_not_called()
+
+
+def test_stop_companion_manager_marks_expected_and_clears_backoff():
+    arbiter = gunicorn.arbiter.Arbiter(DummyApplication())
+    arbiter.companion_manager_pid = 4242
+    arbiter._companion_manager_failures = 3
+    arbiter._companion_manager_respawn_at = time.monotonic() + 60
+    with mock.patch("os.kill"):
+        arbiter.stop_companion_manager(signal.SIGTERM)
+    assert arbiter._companion_manager_stopping is True
+    assert arbiter._companion_manager_failures == 0
+    assert arbiter._companion_manager_respawn_at == 0
 
 
 def test_stop_companion_manager_signals_running():

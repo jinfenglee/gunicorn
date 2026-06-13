@@ -36,6 +36,10 @@ class Arbiter:
     # A flag indicating if an application failed to be loaded
     APP_LOAD_ERROR = 4
 
+    # Cap on the crash-backoff delay before respawning a companion manager
+    # that keeps exiting unexpectedly, so a crash loop cannot busy-spin.
+    COMPANION_MANAGER_MAX_RESPAWN_DELAY = 30
+
     START_CTX = {}
 
     LISTENERS = []
@@ -67,6 +71,14 @@ class Arbiter:
         self.master_pid = 0
         self.master_name = "Master"
         self.companion_manager_pid = 0
+        # True while a manager exit is expected (deliberate stop or reload), so
+        # the reaper logs it as info instead of an unexpected-crash error.
+        self._companion_manager_stopping = False
+        # Crash backoff: earliest monotonic time the main loop may respawn a
+        # manager that exited unexpectedly, plus the consecutive-crash count
+        # that sizes the delay.
+        self._companion_manager_respawn_at = 0
+        self._companion_manager_failures = 0
         # Configs of the currently running companion manager, cached at spawn so
         # shutdown can size its wait without re-reading the config file.
         self._companion_configs = []
@@ -539,8 +551,23 @@ class Arbiter:
                     # The manager itself exited; clear its pid so the main
                     # loop respawns it. It owns its companions' lifecycles.
                     self.companion_manager_pid = 0
-                    self.log.error(
-                        "Companion manager (pid:%s) exited", wpid)
+                    if self._companion_manager_stopping:
+                        # Expected exit from a deliberate stop or reload.
+                        self._companion_manager_stopping = False
+                        self.log.info(
+                            "Companion manager (pid:%s) exited", wpid)
+                    else:
+                        # Unexpected crash: back off before respawning so a
+                        # manager that cannot boot does not busy-spin.
+                        self._companion_manager_failures += 1
+                        delay = min(
+                            2 ** (self._companion_manager_failures - 1),
+                            self.COMPANION_MANAGER_MAX_RESPAWN_DELAY)
+                        self._companion_manager_respawn_at = (
+                            time.monotonic() + delay)
+                        self.log.error(
+                            "Companion manager (pid:%s) exited unexpectedly; "
+                            "respawning in %ss", wpid, delay)
                 else:
                     # A worker was terminated. If the termination reason was
                     # that it could not boot, we'll shut it down to avoid
@@ -674,8 +701,12 @@ class Arbiter:
         child of the arbiter; per-companion supervision lives entirely inside
         it, so the arbiter only ensures the one manager process exists.
         """
-        if self.companion_manager_pid == 0 and self.cfg.companion_workers:
-            self.spawn_companion_manager()
+        if not (self.companion_manager_pid == 0 and self.cfg.companion_workers):
+            return
+        if time.monotonic() < self._companion_manager_respawn_at:
+            # Still inside the crash-backoff window; wait before respawning.
+            return
+        self.spawn_companion_manager()
 
     def spawn_companion_manager(self):
         """Fork the companion manager process.
@@ -785,6 +816,11 @@ class Arbiter:
         """
         if self.companion_manager_pid == 0:
             return
+        # This exit is on purpose: mark it expected and clear any crash backoff
+        # so the reaper logs info and a reload can respawn without delay.
+        self._companion_manager_stopping = True
+        self._companion_manager_failures = 0
+        self._companion_manager_respawn_at = 0
         try:
             os.kill(self.companion_manager_pid, sig)
         except OSError as e:
