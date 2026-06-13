@@ -14,6 +14,9 @@ import socket
 from gunicorn.errors import HaltServer, AppImportError
 from gunicorn.pidfile import Pidfile
 from gunicorn import sock, systemd, util
+from gunicorn.companion.config import build_companion_configs
+from gunicorn.companion.control import ControlServer
+from gunicorn.companion.manager import CompanionManager
 
 from gunicorn import __version__, SERVER_SOFTWARE
 
@@ -32,6 +35,10 @@ class Arbiter:
 
     # A flag indicating if an application failed to be loaded
     APP_LOAD_ERROR = 4
+
+    # Cap on the crash-backoff delay before respawning a companion manager
+    # that keeps exiting unexpectedly, so a crash loop cannot busy-spin.
+    COMPANION_MANAGER_MAX_RESPAWN_DELAY = 30
 
     START_CTX = {}
 
@@ -63,6 +70,18 @@ class Arbiter:
         self.reexec_pid = 0
         self.master_pid = 0
         self.master_name = "Master"
+        self.companion_manager_pid = 0
+        # True while a manager exit is expected (deliberate stop or reload), so
+        # the reaper logs it as info instead of an unexpected-crash error.
+        self._companion_manager_stopping = False
+        # Crash backoff: earliest monotonic time the main loop may respawn a
+        # manager that exited unexpectedly, plus the consecutive-crash count
+        # that sizes the delay.
+        self._companion_manager_respawn_at = 0
+        self._companion_manager_failures = 0
+        # Configs of the currently running companion manager, cached at spawn so
+        # shutdown can size its wait without re-reading the config file.
+        self._companion_configs = []
 
         cwd = util.getcwd()
 
@@ -201,6 +220,7 @@ class Arbiter:
 
         try:
             self.manage_workers()
+            self.manage_companion_manager()
 
             while True:
                 self.maybe_promote_master()
@@ -210,6 +230,7 @@ class Arbiter:
                     self.sleep()
                     self.murder_workers()
                     self.manage_workers()
+                    self.manage_companion_manager()
                     continue
 
                 if sig not in self.SIG_NAMES:
@@ -389,14 +410,18 @@ class Arbiter:
         sig = signal.SIGTERM
         if not graceful:
             sig = signal.SIGQUIT
-        limit = time.time() + self.cfg.graceful_timeout
-        # instruct the workers to exit
+        # The manager may need longer than a worker to drain its companions.
+        limit = time.time() + max(
+            self.cfg.graceful_timeout, self.companion_manager_stop_timeout())
+        # instruct the workers and the companion manager to exit
         self.kill_workers(sig)
+        self.stop_companion_manager(sig)
         # wait until the graceful timeout
-        while self.WORKERS and time.time() < limit:
+        while (self.WORKERS or self.companion_manager_pid) and time.time() < limit:
             time.sleep(0.1)
 
         self.kill_workers(signal.SIGKILL)
+        self.stop_companion_manager(signal.SIGKILL)
 
     def reexec(self):
         """\
@@ -487,6 +512,9 @@ class Arbiter:
         # manage workers
         self.manage_workers()
 
+        # reload companions with the new configuration
+        self.reload_companion_manager()
+
     def murder_workers(self):
         """\
         Kill unused/idle workers
@@ -519,6 +547,27 @@ class Arbiter:
                     break
                 if self.reexec_pid == wpid:
                     self.reexec_pid = 0
+                elif self.companion_manager_pid == wpid:
+                    # The manager itself exited; clear its pid so the main
+                    # loop respawns it. It owns its companions' lifecycles.
+                    self.companion_manager_pid = 0
+                    if self._companion_manager_stopping:
+                        # Expected exit from a deliberate stop or reload.
+                        self._companion_manager_stopping = False
+                        self.log.info(
+                            "Companion manager (pid:%s) exited", wpid)
+                    else:
+                        # Unexpected crash: back off before respawning so a
+                        # manager that cannot boot does not busy-spin.
+                        self._companion_manager_failures += 1
+                        delay = min(
+                            2 ** (self._companion_manager_failures - 1),
+                            self.COMPANION_MANAGER_MAX_RESPAWN_DELAY)
+                        self._companion_manager_respawn_at = (
+                            time.monotonic() + delay)
+                        self.log.error(
+                            "Companion manager (pid:%s) exited unexpectedly; "
+                            "respawning in %ss", wpid, delay)
                 else:
                     # A worker was terminated. If the termination reason was
                     # that it could not boot, we'll shut it down to avoid
@@ -644,6 +693,162 @@ class Arbiter:
         for _ in range(self.num_workers - len(self.WORKERS)):
             self.spawn_worker()
             time.sleep(0.1 * random.random())
+
+    def manage_companion_manager(self):
+        """Keep the companion manager alive, spawning it if it is not running.
+
+        Does nothing unless companions are configured. The manager is a single
+        child of the arbiter; per-companion supervision lives entirely inside
+        it, so the arbiter only ensures the one manager process exists.
+        """
+        if not (self.companion_manager_pid == 0 and self.cfg.companion_workers):
+            return
+        if time.monotonic() < self._companion_manager_respawn_at:
+            # Still inside the crash-backoff window; wait before respawning.
+            return
+        self.spawn_companion_manager()
+
+    def spawn_companion_manager(self):
+        """Fork the companion manager process.
+
+        The configs are built in the parent before the fork; the parent then
+        records the manager pid and returns, while the child runs the manager's
+        supervision loop and exits when the loop returns. The manager forks the
+        individual companions itself.
+        """
+        configs = build_companion_configs(self.cfg)
+        if not configs:
+            return
+        manager = CompanionManager(configs, self.log)
+        manager.config_loader = lambda: build_companion_configs(self.cfg)
+        if self.cfg.companion_control_socket:
+            manager.control = ControlServer(
+                manager.handle_command,
+                self.cfg.companion_control_socket,
+                mode=self.cfg.companion_control_socket_mode or 0o600,
+                log=self.log)
+
+        pid = os.fork()
+        if pid != 0:
+            self.companion_manager_pid = pid
+            self._companion_configs = configs
+            self.log.info("Companion manager started (pid:%s)", pid)
+            return
+
+        # Process Child
+        try:
+            self._close_gunicorn_fds()
+            util._setproctitle("companion manager [%s]" % self.proc_name)
+            manager.run()
+            sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            self.log.exception("Exception in companion manager process")
+            sys.exit(-1)
+
+    def _close_gunicorn_fds(self):
+        """Close fds the manager inherited from the arbiter but never uses.
+
+        The companion manager serves no HTTP traffic and does not run the
+        arbiter's signal loop, so it drops the listening sockets, the arbiter's
+        wakeup pipe, and the worker heartbeat files. Closing them keeps the
+        manager (and the companions it forks) from pinning the arbiter's fds.
+        """
+        for listener in self.LISTENERS:
+            listener.close()
+        for pipe_fd in self.PIPE:
+            try:
+                os.close(pipe_fd)
+            except OSError:
+                pass
+        for worker in self.WORKERS.values():
+            worker.tmp.close()
+
+    def reload_companion_manager(self):
+        """Reconcile the companion manager with the reloaded configuration.
+
+        A web reload (SIGHUP) recycles HTTP workers and re-reads config, but
+        with ``--preload`` it does not reload application code -- the WSGI
+        callable is loaded once and cached -- so the running companions are
+        already current. Restarting them on every reload would bounce them for
+        nothing, so the manager is only reloaded when the companion config
+        actually changed.
+
+        When it did change, a running manager is asked to stop (it drains its
+        companions first); the SIGCHLD reaper clears its pid so the main loop
+        respawns it from the fresh cfg, and a manager started where none ran
+        comes up right away. An unchanged config leaves the manager and its
+        companions untouched. Per-companion transactional reread stays
+        available separately through the control socket.
+        """
+        try:
+            new_configs = build_companion_configs(self.cfg)
+        except Exception:
+            self.log.exception(
+                "Could not read companion config on reload; "
+                "leaving companion manager unchanged")
+            return
+        if not self._companion_configs_changed(new_configs):
+            return
+        if self.companion_manager_pid != 0:
+            self.log.info("Companion config changed, reloading companion manager")
+            self.stop_companion_manager(signal.SIGTERM)
+        self.manage_companion_manager()
+
+    def _companion_configs_changed(self, new_configs):
+        """True when the companion config differs from the running manager's.
+
+        Compares the sorted ``config_hash`` of every companion, so a changed
+        field, an added name, or a removed name all count, while a pure web
+        reload with the same companion specs does not.
+        """
+        old_hashes = sorted(c.config_hash for c in self._companion_configs)
+        new_hashes = sorted(c.config_hash for c in new_configs)
+        return old_hashes != new_hashes
+
+    def stop_companion_manager(self, sig):
+        """Signal the companion manager to exit, if it is running.
+
+        A graceful SIGTERM lets the manager stop its own companions before it
+        exits; SIGKILL forces it down. The reaper clears the pid once it dies,
+        so a manager that is already gone is a no-op here.
+        """
+        if self.companion_manager_pid == 0:
+            return
+        # This exit is on purpose: mark it expected and clear any crash backoff
+        # so the reaper logs info and a reload can respawn without delay.
+        self._companion_manager_stopping = True
+        self._companion_manager_failures = 0
+        self._companion_manager_respawn_at = 0
+        try:
+            os.kill(self.companion_manager_pid, sig)
+        except OSError as e:
+            if e.errno == errno.ESRCH:
+                self.companion_manager_pid = 0
+                return
+            raise
+
+    def companion_manager_stop_timeout(self):
+        """Seconds to wait for the companion manager during shutdown: the
+        explicit setting, else the slowest companion stop_timeout plus the
+        shutdown buffer, else 0 when no companions are configured.
+        """
+        if self.cfg.companion_manager_stop_timeout is not None:
+            return self.cfg.companion_manager_stop_timeout
+        # Prefer the configs cached at spawn over re-reading the config file
+        # mid-shutdown, where a since-changed or removed file could raise.
+        configs = self._companion_configs
+        if not configs:
+            try:
+                configs = build_companion_configs(self.cfg)
+            except Exception:
+                self.log.exception("could not read companion config for shutdown")
+                return 0
+        if not configs:
+            return 0
+        slowest = max(config.stop_timeout for config in configs)
+        return slowest + self.cfg.companion_manager_shutdown_buffer
 
     def kill_workers(self, sig):
         """\

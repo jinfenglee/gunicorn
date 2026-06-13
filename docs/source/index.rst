@@ -23,6 +23,7 @@ Features
 * Simple Python configuration
 * Multiple worker configurations
 * Various server hooks for extensibility
+* Supervise non-HTTP :ref:`companion processes <companion>` in the same master
 * Compatible with Python 3.x >= 3.7
 
 
@@ -37,6 +38,7 @@ Contents
     configure
     settings
     instrumentation
+    companion
     deploy
     signals
     custom

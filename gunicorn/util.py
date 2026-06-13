@@ -647,3 +647,15 @@ def bytes_to_str(b):
 
 def unquote_to_wsgi_str(string):
     return urllib.parse.unquote_to_bytes(string).decode('latin-1')
+
+
+def format_uptime(seconds):
+    """Render a duration like supervisor: ``2 days, 03:12:44`` or ``0:05:12``."""
+    seconds = int(seconds)
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+    if days:
+        unit = "day" if days == 1 else "days"
+        return "%d %s, %02d:%02d:%02d" % (days, unit, hours, minutes, remaining_seconds)
+    return "%d:%02d:%02d" % (hours, minutes, remaining_seconds)

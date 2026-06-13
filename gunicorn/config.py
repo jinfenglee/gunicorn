@@ -354,6 +354,31 @@ def validate_dict(val):
     return val
 
 
+def validate_pos_int_or_none(val):
+    if val is None:
+        return None
+    return validate_pos_int(val)
+
+
+def validate_companion_workers(val):
+    if val is None:
+        return []
+    if not isinstance(val, list):
+        raise TypeError("companion_workers must be a list: %s" % val)
+    for item in val:
+        if not isinstance(item, dict):
+            raise TypeError("each companion worker must be a dict: %s" % item)
+    return val
+
+
+def validate_octal_or_none(val):
+    if val is None:
+        return None
+    if isinstance(val, str):
+        val = int(val, 8)
+    return int(val)
+
+
 def validate_pos_int(val):
     if not isinstance(val, int):
         val = int(val, 0)
@@ -2501,4 +2526,200 @@ class HeaderMap(Setting):
         on a proxy in front of Gunicorn.
 
         .. versionadded:: 22.0.0
+        """
+
+
+class CompanionConfigFile(Setting):
+    name = "companion_config_file"
+    section = "Companion Processes"
+    cli = ["--companion-config"]
+    validator = validate_string
+    default = None
+    desc = """\
+        Dedicated Python file the manager reads for companion specs.
+
+        Lets companions reload independently of the main Gunicorn config.
+        Example: ``companion_config_file = "/home/frappe/bench/companion.conf.py"``.
+        If unset, specs are read from the main Gunicorn config.
+        """
+
+
+class CompanionWorkers(Setting):
+    name = "companion_workers"
+    section = "Companion Processes"
+    validator = validate_companion_workers
+    default = []
+    desc = """\
+        List of companion process specs, each a dict.
+
+        A spec requires ``name`` and ``target``; other keys override defaults.
+        Example: ``[{"name": "scheduler", "target": "app:run_scheduler"}]``.
+        """
+
+
+class CompanionControlSocket(Setting):
+    name = "companion_control_socket"
+    section = "Companion Processes"
+    cli = ["--companion-control-socket"]
+    validator = validate_string
+    default = None
+    desc = """\
+        Unix socket the manager listens on for control commands.
+
+        Clients send ``status``/``start``/``stop``/``restart``/``reread`` as JSON.
+        Example: ``companion_control_socket = "/run/gunicorn/companion.sock"``.
+        """
+
+
+class CompanionControlSocketMode(Setting):
+    name = "companion_control_socket_mode"
+    section = "Companion Processes"
+    validator = validate_octal_or_none
+    default = 0o600
+    desc = """\
+        Octal file mode set on the control socket after it is created.
+
+        Default ``0o600`` lets only the owner connect.
+        Example: ``companion_control_socket_mode = 0o660``.
+        """
+
+
+class CompanionStopSignal(Setting):
+    name = "companion_stop_signal"
+    section = "Companion Processes"
+    validator = validate_string
+    default = "SIGTERM"
+    desc = """\
+        Signal sent first when stopping a companion.
+
+        The companion should catch it to drain work before exiting.
+        Example: ``companion_stop_signal = "SIGINT"``.
+        """
+
+
+class CompanionStopTimeout(Setting):
+    name = "companion_stop_timeout"
+    section = "Companion Processes"
+    validator = validate_pos_int
+    default = 60
+    desc = """\
+        Seconds to wait after the stop signal before sending SIGKILL.
+
+        Give slow-draining workers a larger value.
+        Example: ``companion_stop_timeout = 300``.
+        """
+
+
+class CompanionReloadTimeout(Setting):
+    name = "companion_reload_timeout"
+    section = "Companion Processes"
+    validator = validate_pos_int
+    default = 60
+    desc = """\
+        Seconds to wait for the old child to exit during restart/reread.
+
+        Used instead of ``stop_timeout`` when replacing a companion.
+        Example: ``companion_reload_timeout = 30``.
+        """
+
+
+class CompanionStdout(Setting):
+    name = "companion_stdout"
+    section = "Companion Processes"
+    validator = validate_string
+    default = None
+    desc = """\
+        Where to send companion stdout: a file path or ``"inherit"``.
+
+        Files are opened in append mode; ``None`` inherits the manager's stdout.
+        Example: ``companion_stdout = "/var/log/frappe/rq.log"``.
+        """
+
+
+class CompanionStderr(Setting):
+    name = "companion_stderr"
+    section = "Companion Processes"
+    validator = validate_string
+    default = None
+    desc = """\
+        Where to send companion stderr: a path, ``"stdout"``, or ``"inherit"``.
+
+        Use ``"stdout"`` to merge stderr into the stdout target.
+        Example: ``companion_stderr = "stdout"``.
+        """
+
+
+class CompanionCwd(Setting):
+    name = "companion_cwd"
+    section = "Companion Processes"
+    validator = validate_string
+    default = None
+    desc = """\
+        Directory the child changes into before running the target.
+
+        Example: ``companion_cwd = "/home/frappe/frappe-bench"``.
+        """
+
+
+class CompanionEnv(Setting):
+    name = "companion_env"
+    section = "Companion Processes"
+    validator = validate_dict
+    default = {}
+    desc = """\
+        Extra environment variables merged into the child environment.
+
+        Example: ``companion_env = {"QUEUE": "default"}``.
+        """
+
+
+class CompanionStartsecs(Setting):
+    name = "companion_startsecs"
+    section = "Companion Processes"
+    validator = validate_pos_int
+    default = 1
+    desc = """\
+        Seconds a freshly forked companion must survive to reach RUNNING.
+
+        Exiting earlier counts as a failed start and triggers BACKOFF.
+        Example: ``companion_startsecs = 5``.
+        """
+
+
+class CompanionRestartDelay(Setting):
+    name = "companion_restart_delay"
+    section = "Companion Processes"
+    validator = validate_pos_int
+    default = 5
+    desc = """\
+        Fixed seconds to wait before restarting a crashed companion.
+
+        No exponential backoff; the same delay is used every time.
+        Example: ``companion_restart_delay = 10``.
+        """
+
+
+class CompanionManagerShutdownBuffer(Setting):
+    name = "companion_manager_shutdown_buffer"
+    section = "Companion Processes"
+    validator = validate_pos_int
+    default = 10
+    desc = """\
+        Extra seconds added to the slowest companion timeout for the manager.
+
+        Gives the manager headroom to stop all children before Gunicorn kills it.
+        Example: ``companion_manager_shutdown_buffer = 15``.
+        """
+
+
+class CompanionManagerStopTimeout(Setting):
+    name = "companion_manager_stop_timeout"
+    section = "Companion Processes"
+    validator = validate_pos_int_or_none
+    default = None
+    desc = """\
+        Seconds Gunicorn waits for the manager to stop during shutdown.
+
+        By default it uses the slowest companion ``stop_timeout`` plus a buffer.
+        Example: ``companion_manager_stop_timeout = 120``.
         """
